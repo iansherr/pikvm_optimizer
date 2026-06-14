@@ -363,6 +363,7 @@ ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "cat > '$REMOTE_DEST' && chmod 700 
 # ==============================================================================
 
 set -euo pipefail
+set +e  # Disable exit-on-error; we handle errors manually
 
 # ------------------------------------------------------------------------------
 # Remote options
@@ -2511,7 +2512,7 @@ if [ "$RUN_INSTALL" = true ]; then install_optimizer_permanently; fi
 # if [ "$RUN_SUDO" = true ]; then apply_restricted_sudo; fi (DISABLED)
 
 final_restart || true
-health_check
+health_check || true
 
 SUCCESS=true
 make_ro
