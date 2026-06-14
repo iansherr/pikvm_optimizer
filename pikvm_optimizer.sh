@@ -299,6 +299,9 @@ if [ "$DRY_RUN" = true ]; then
 fi
 
 printf "\n"
+printf "%bPress Enter to continue...%b\n" "$DIM" "$RESET"
+read -r
+printf "\n"
 
 if [ -z "$PI_HOST" ]; then
     read -rp "PiKVM target IP or hostname: " PI_HOST
