@@ -269,12 +269,12 @@ cleanup_local() {
 
     LOCAL_CLEANED=true
 
-    if [ -n "${PI_HOST:-}" ] && [ -n "${PI_USER:-}" ] && [ -n "${REMOTE_DIR:-}" ] && [ "${#SSH_OPTS[@]:-0}" -gt 0 ]; then
+    if [ -n "${PI_HOST:-}" ] && [ -n "${PI_USER:-}" ] && [ -n "${REMOTE_DIR:-}" ] && [ "${#SSH_OPTS[@]}" -gt 0 ]; then
         ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "rm -rf '$REMOTE_DIR'" >/dev/null 2>&1 || true
     fi
 
     # Close SSH multiplexed connection
-    if [ -n "${PI_HOST:-}" ] && [ -n "${PI_USER:-}" ] && [ "${#SSH_OPTS[@]:-0}" -gt 0 ]; then
+    if [ -n "${PI_HOST:-}" ] && [ -n "${PI_USER:-}" ] && [ "${#SSH_OPTS[@]}" -gt 0 ]; then
         ssh -O exit "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" >/dev/null 2>&1 || true
     fi
 
