@@ -24,6 +24,7 @@ SUDO_USER=""
 EDID_URL=""
 EDID_FILE=""
 PRINT_REMOTE=false
+REBOOT=false
 REMOTE_ARGS=()
 
 require_arg() {
@@ -75,6 +76,7 @@ Module flags:
 
 Other:
   --print-remote     Print embedded remote script and exit
+  --reboot           Reboot PiKVM after changes
   --no-color         Disable color output
   -V, --version      Show version
   -h, --help         Show this help
@@ -179,6 +181,11 @@ while [ "$#" -gt 0 ]; do
             ;;
         --print-remote)
             PRINT_REMOTE=true
+            shift
+            ;;
+        --reboot)
+            REBOOT=true
+            REMOTE_ARGS+=(--reboot)
             shift
             ;;
         --no-color)
@@ -399,6 +406,7 @@ EDID_URL=""
 EDID_FILE=""
 PUBKEY_CONTENT=""
 SUDO_USER=""
+REBOOT=false
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -532,6 +540,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --no-color)
             export NO_COLOR=true
+            shift
+            ;;
+        --reboot)
+            REBOOT=true
             shift
             ;;
         *)
@@ -2348,6 +2360,24 @@ final_restart() {
 
     if [ "${RUN_SSL:-false}" = true ]; then
         restart_service_if_exists kvmd-nginx.service false
+    fi
+
+    # Post-run reboot warning for modules that benefit from reboot
+    if [ "${RUN_MTU:-false}" = true ] || [ "${RUN_EDID:-false}" = true ]; then
+        warn "Some changes (MTU/EDID) may require a reboot to take full effect."
+    fi
+
+    if [ "${REBOOT:-false}" = true ]; then
+        info "Rebooting PiKVM as requested..."
+        if [ "$DRY_RUN" = true ]; then
+            ok "DRY RUN: would reboot system."
+        else
+            info "Rebooting in 5 seconds... (Ctrl+C to cancel)"
+            sleep 5
+            systemctl reboot
+        fi
+    else
+        warn "Reboot recommended for MTU/EDID changes. Use --reboot flag to auto-reboot."
     fi
 
     ok "Service refresh complete."
