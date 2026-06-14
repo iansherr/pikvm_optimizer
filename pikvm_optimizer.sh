@@ -312,7 +312,7 @@ if [ -z "$PI_USER" ]; then
 fi
 
 if [ -z "$SSH_KEY" ]; then
-    read -rp "Optional SSH identity file path [default SSH agent/keychain]: " SSH_KEY
+    read -rp "Optional: SSH private key path (for key-based auth) [Enter to use SSH agent/keychain]: " SSH_KEY
 fi
 
 REMOTE_DIR=""
@@ -1549,7 +1549,7 @@ apply_edid() {
         warn "EDID source required for non-interactive mode; skipped EDID."
         return 0
     else
-        printf "\nEnter EDID hex file URL or local path on PiKVM.\n"
+        printf "\nEnter EDID hex file URL (https://...) or local path on PiKVM.\n"
         printf "Leave blank to skip EDID setup.\n"
         printf "EDID source: "
         read -r edid_source
@@ -1824,7 +1824,7 @@ apply_ssh_key() {
         read -r target_user
         target_user="${target_user:-root}"
 
-        printf "Paste SSH public key, usually starting with ssh-ed25519 or ssh-rsa:\n"
+        printf "Paste SSH public key (starts with ssh-ed25519, ssh-rsa, ecdsa-...):\n"
         read -r pubkey
     fi
 
@@ -1925,7 +1925,7 @@ apply_restricted_sudo() {
         warn "Restricted sudo requires --sudo-user for non-interactive mode; skipped."
         return 0
     else
-        printf "\nNon-root user to grant restricted sudo access: "
+        printf "\nNon-root user to grant restricted sudo access (e.g., 'admin'): "
         read -r sudo_user
     fi
 
@@ -1952,7 +1952,8 @@ apply_restricted_sudo() {
     if [ "$DRY_RUN" = true ]; then
         ok "DRY RUN: would create /etc/sudoers.d/pikvm-optimizer-$sudo_user."
         box_line "Would allow:"
-        box_line "  $sudo_user ALL=(root) NOPASSWD: $INSTALL_PATH"
+        local sudo_line="  $sudo_user ALL=(root) NOPASSWD: $INSTALL_PATH"
+        box_line "  ${sudo_line:0:74}"
         return 0
     fi
 
@@ -2092,7 +2093,7 @@ uninstall_ssh_key() {
     read -r target_user
     target_user="${target_user:-root}"
 
-    printf "Paste exact SSH public key to remove:\n"
+    printf "Paste exact SSH public key to remove (same format as install):\n"
     read -r pubkey
 
     if [ -z "$pubkey" ]; then
@@ -2149,7 +2150,7 @@ uninstall_sudoers() {
         return 0
     fi
 
-    printf "\nNon-root user whose optimizer sudoers rule should be removed: "
+    printf "\nNon-root user whose optimizer sudoers rule to remove (e.g., 'admin'): "
     read -r sudo_user
 
     if [ -z "$sudo_user" ] || [ "$sudo_user" = "root" ]; then
@@ -2191,7 +2192,8 @@ restore_from_backup() {
     box_line ""
 
     for i in "${!backups[@]}"; do
-        box_line "[$((i + 1))] ${backups[$i]}"
+        local b="${backups[$i]}"
+        box_line "[$((i + 1))] ${b:0:70}"
     done
 
     box_line ""
@@ -2202,7 +2204,7 @@ restore_from_backup() {
         return 0
     fi
 
-    printf "Backup number to restore, or blank to cancel: "
+    printf "Backup number to restore (or blank to cancel): "
     read -r choice
 
     if [ -z "$choice" ]; then
@@ -2347,7 +2349,8 @@ final_restart() {
 rollback_hint() {
     if [ -n "$BACKUP_FILE" ]; then
         box_line "Rollback command:"
-        box_line "  rw && cp '$BACKUP_FILE' '$CONFIG_FILE' && systemctl restart kvmd && ro"
+        local rb="rw && cp '$BACKUP_FILE' '$CONFIG_FILE' && systemctl restart kvmd && ro"
+        box_line "  ${rb:0:74}"
     fi
 }
 
@@ -2516,7 +2519,7 @@ else
 fi
 
 if [ -n "$BACKUP_FILE" ]; then
-    box_line "Backup file: $BACKUP_FILE"
+    box_line "Backup file: ${BACKUP_FILE:0:62}"
 fi
 
 rollback_hint
