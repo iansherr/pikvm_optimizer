@@ -2,9 +2,12 @@
 # ==============================================================================
 # PiKVM Optimizer
 # Single-file macOS/Linux launcher with embedded PiKVM remote optimizer.
+# Version: 1.0.0
 # ==============================================================================
 
 set -euo pipefail
+
+VERSION="1.0.0"
 
 # ------------------------------------------------------------------------------
 # Local launcher options
@@ -16,6 +19,11 @@ NO_COLOR_LOCAL=false
 PI_HOST=""
 PI_USER=""
 SSH_KEY=""
+PUBKEY_FILE=""
+SUDO_USER=""
+EDID_URL=""
+EDID_FILE=""
+PRINT_REMOTE=false
 REMOTE_ARGS=()
 
 usage() {
@@ -45,15 +53,21 @@ Module flags:
   --no-core          Disable core streamer/VNC settings
   --mtu              Enable Tailscale MTU module
   --edid             Enable EDID module
+  --edid-url URL     EDID hex file URL (non-interactive)
+  --edid-file PATH   EDID hex file local path (non-interactive)
   --ssl              Enable Tailscale SSL module
   --fan              Enable fan curve module
   --watchdog         Enable Tailscale watchdog module
   --key              Enable SSH public key install module
+  --pubkey-file PATH SSH public key file for non-interactive install
   --install          Install optimizer permanently on PiKVM
   --sudo             Configure restricted NOPASSWD sudo for installed optimizer
+  --sudo-user USER   User for restricted sudo (non-interactive)
 
 Other:
+  --print-remote     Print embedded remote script and exit
   --no-color         Disable color output
+  -V, --version      Show version
   -h, --help         Show this help
 
 Examples:
@@ -63,6 +77,10 @@ Examples:
   $0 --host pikvm.local --all
   $0 --host pikvm.local --health-check --yes
   $0 --host pikvm.local --uninstall
+  $0 --host pikvm.local --key --pubkey-file ~/.ssh/id_ed25519.pub --yes
+  $0 --host pikvm.local --sudo --sudo-user admin --yes
+  $0 --host pikvm.local --edid --edid-url https://example.com/edid.hex --yes
+  $0 --print-remote > /tmp/pikvm-optimizer-remote.sh
 EOF
 }
 
@@ -118,11 +136,39 @@ while [ "$#" -gt 0 ]; do
             REMOTE_ARGS+=("$1")
             shift
             ;;
+        --edid-url)
+            EDID_URL="${2:-}"
+            REMOTE_ARGS+=(--edid-url "$EDID_URL")
+            shift 2
+            ;;
+        --edid-file)
+            EDID_FILE="${2:-}"
+            REMOTE_ARGS+=(--edid-file "$EDID_FILE")
+            shift 2
+            ;;
+        --pubkey-file)
+            PUBKEY_FILE="${2:-}"
+            REMOTE_ARGS+=(--pubkey-file "$PUBKEY_FILE")
+            shift 2
+            ;;
+        --sudo-user)
+            SUDO_USER="${2:-}"
+            REMOTE_ARGS+=(--sudo-user "$SUDO_USER")
+            shift 2
+            ;;
+        --print-remote)
+            PRINT_REMOTE=true
+            shift
+            ;;
         --no-color)
             export NO_COLOR=true
             NO_COLOR_LOCAL=true
             REMOTE_ARGS+=(--no-color)
             shift
+            ;;
+        -V|--version)
+            printf "PiKVM Optimizer v%s\n" "$VERSION"
+            exit 0
             ;;
         -h|--help)
             usage
@@ -200,6 +246,11 @@ cancel_local() {
 
 printf "%b\n" "${C}${BOLD}PiKVM Optimizer${RESET}"
 printf "%b\n" "${DIM}Single-file launcher. The PiKVM-side optimizer is embedded and sent over SSH.${RESET}"
+
+if [ "$PRINT_REMOTE" = true ]; then
+    sed -n '/^PIKVM_REMOTE_SCRIPT$/,/^PIKVM_REMOTE_SCRIPT$/p' "$0" | sed '1d;$d'
+    exit 0
+fi
 
 if [ "$DRY_RUN" = true ]; then
     printf "%b\n" "${Y}${BOLD}DRY RUN ENABLED:${RESET} persistent PiKVM changes will be skipped where possible."
@@ -284,6 +335,11 @@ UN_WATCHDOG=false
 UN_KEY=false
 UN_INSTALL=false
 UN_SUDO=false
+
+EDID_URL=""
+EDID_FILE=""
+PUBKEY_FILE=""
+SUDO_USER=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -398,6 +454,22 @@ while [ "$#" -gt 0 ]; do
             RUN_INSTALL=true
             FLAGS_PROVIDED=true
             shift
+            ;;
+        --edid-url)
+            EDID_URL="${2:-}"
+            shift 2
+            ;;
+        --edid-file)
+            EDID_FILE="${2:-}"
+            shift 2
+            ;;
+        --pubkey-file)
+            PUBKEY_FILE="${2:-}"
+            shift 2
+            ;;
+        --sudo-user)
+            SUDO_USER="${2:-}"
+            shift 2
             ;;
         --no-color)
             export NO_COLOR=true
@@ -1284,10 +1356,19 @@ apply_edid() {
     local edid_dest="/etc/kvmd/tc358743-edid.hex"
     local patch="/tmp/pikvm-optimizer.edid.yaml"
 
-    printf "\nEnter EDID hex file URL or local path on PiKVM.\n"
-    printf "Leave blank to skip EDID setup.\n"
-    printf "EDID source: "
-    read -r edid_source
+    if [ -n "$EDID_URL" ]; then
+        edid_source="$EDID_URL"
+    elif [ -n "$EDID_FILE" ]; then
+        edid_source="$EDID_FILE"
+    elif [ "$YES" = true ]; then
+        warn "EDID source required for non-interactive mode; skipped EDID."
+        return 0
+    else
+        printf "\nEnter EDID hex file URL or local path on PiKVM.\n"
+        printf "Leave blank to skip EDID setup.\n"
+        printf "EDID source: "
+        read -r edid_source
+    fi
 
     if [ -z "$edid_source" ]; then
         warn "No EDID source provided; skipped EDID."
@@ -1496,17 +1577,24 @@ apply_ssh_key() {
     local pubkey=""
     local home_dir=""
 
-    if [ "$YES" = true ]; then
-        warn "SSH key install requires interactive public key input; skipped in --yes mode."
+    if [ -n "$PUBKEY_FILE" ]; then
+        if [ ! -f "$PUBKEY_FILE" ]; then
+            warn "Public key file not found: $PUBKEY_FILE"
+            return 0
+        fi
+        pubkey="$(cat "$PUBKEY_FILE")"
+        target_user="root"
+    elif [ "$YES" = true ]; then
+        warn "SSH key install requires --pubkey-file for non-interactive mode; skipped."
         return 0
+    else
+        printf "\nInstall key for which user? [root]: "
+        read -r target_user
+        target_user="${target_user:-root}"
+
+        printf "Paste SSH public key, usually starting with ssh-ed25519 or ssh-rsa:\n"
+        read -r pubkey
     fi
-
-    printf "\nInstall key for which user? [root]: "
-    read -r target_user
-    target_user="${target_user:-root}"
-
-    printf "Paste SSH public key, usually starting with ssh-ed25519 or ssh-rsa:\n"
-    read -r pubkey
 
     if [ -z "$pubkey" ]; then
         warn "No public key provided; skipped SSH key install."
@@ -1589,13 +1677,15 @@ apply_restricted_sudo() {
 
     local sudo_user=""
 
-    if [ "$YES" = true ]; then
-        warn "Restricted sudo requires interactive username input; skipped in --yes mode."
+    if [ -n "$SUDO_USER" ]; then
+        sudo_user="$SUDO_USER"
+    elif [ "$YES" = true ]; then
+        warn "Restricted sudo requires --sudo-user for non-interactive mode; skipped."
         return 0
+    else
+        printf "\nNon-root user to grant restricted sudo access: "
+        read -r sudo_user
     fi
-
-    printf "\nNon-root user to grant restricted sudo access: "
-    read -r sudo_user
 
     if [ -z "$sudo_user" ] || [ "$sudo_user" = "root" ]; then
         warn "Invalid or root user; skipped sudoers setup."
