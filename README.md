@@ -64,6 +64,8 @@ chmod +x pikvm_optimizer.sh
 | `--health-check` | Run diagnostics only |
 | `--uninstall` | Open uninstall/cleanup menu |
 | `--restore` | Restore /etc/kvmd/override.yaml from backup |
+| `--print-remote` | Print embedded remote script and exit |
+| `-V, --version` | Show version |
 
 ### Presets
 
@@ -80,12 +82,16 @@ chmod +x pikvm_optimizer.sh
 | `--core` | Core streamer/VNC settings |
 | `--mtu` | Tailscale MTU |
 | `--edid` | Persistent EDID |
+| `--edid-url URL` | EDID hex file URL (non-interactive) |
+| `--edid-file PATH` | EDID hex file local path (non-interactive) |
 | `--ssl` | Tailscale SSL certificate |
 | `--fan` | Fan curve |
 | `--watchdog` | Tailscale watchdog |
 | `--key` | SSH public key install |
+| `--pubkey-file PATH` | SSH public key file for non-interactive install |
 | `--install` | Install optimizer permanently |
 | `--sudo` | Configure restricted NOPASSWD sudo |
+| `--sudo-user USER` | User for restricted sudo (non-interactive) |
 
 ## Configuration
 
@@ -129,6 +135,21 @@ All changes are backed up before modification and can be rolled back.
 
 # Restore configuration from backup
 ./pikvm_optimizer.sh --host pikvm.local --restore
+
+# Install SSH key non-interactively
+./pikvm_optimizer.sh --host pikvm.local --key --pubkey-file ~/.ssh/id_ed25519.pub --yes
+
+# Configure restricted sudo non-interactively
+./pikvm_optimizer.sh --host pikvm.local --sudo --sudo-user admin --yes
+
+# Install EDID from URL non-interactively
+./pikvm_optimizer.sh --host pikvm.local --edid --edid-url https://example.com/edid.hex --yes
+
+# Extract embedded remote script for debugging
+./pikvm_optimizer.sh --print-remote > /tmp/pikvm-optimizer-remote.sh
+
+# Show version
+./pikvm_optimizer.sh --version
 ```
 
 ## Contributing
@@ -150,7 +171,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **PiKVM Community** - For the amazing PiKVM project and community support ([GitHub](https://github.com/pikvm/pikvm), [Reddit](https://reddit.com/r/pikvm))
 - **PiKVM Project** - For creating the excellent PiKVM platform
 - **AI Agent** - For iterative development assistance and code refinement
-- **Time Worthy Media** - For project support and development
 
 ## Author
 
