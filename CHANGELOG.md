@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-06-14
+
+### Security
+
+- Use `mktemp -d` for secure remote temp directories instead of predictable paths
+- Add backups for all overwritten files (MTU, EDID, SSL, watchdog)
+- Make config writes atomic using temp file + `mv` instead of `cp`
+- Require HTTPS for EDID downloads and validate file type/size
+- Validate SSH key install paths to reject symlinks
+- Add input validation for options requiring values
+- Reject host/user values starting with `-` to prevent SSH option injection
+
+### Fixed
+
+- `--print-remote` now outputs only the remote script without local banner
+- `--pubkey-file` reads the file locally and passes content to remote script
+- Service restart failures are now properly reported
+- Improved error handling for critical operations
+
 ## [1.0.0] - 2026-06-14
 
 ### Added

@@ -26,6 +26,15 @@ EDID_FILE=""
 PRINT_REMOTE=false
 REMOTE_ARGS=()
 
+require_arg() {
+    local opt="$1"
+    local val="${2:-}"
+    if [ -z "$val" ]; then
+        printf "Error: %s requires a value\n" "$opt" >&2
+        exit 1
+    fi
+}
+
 usage() {
     cat <<EOF
 Usage:
@@ -87,15 +96,18 @@ EOF
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --host)
-            PI_HOST="${2:-}"
+            require_arg "$1" "${2:-}"
+            PI_HOST="$2"
             shift 2
             ;;
         --user)
-            PI_USER="${2:-}"
+            require_arg "$1" "${2:-}"
+            PI_USER="$2"
             shift 2
             ;;
         --identity|-i)
-            SSH_KEY="${2:-}"
+            require_arg "$1" "${2:-}"
+            SSH_KEY="$2"
             shift 2
             ;;
         --dry-run)
@@ -137,22 +149,31 @@ while [ "$#" -gt 0 ]; do
             shift
             ;;
         --edid-url)
-            EDID_URL="${2:-}"
+            require_arg "$1" "${2:-}"
+            EDID_URL="$2"
             REMOTE_ARGS+=(--edid-url "$EDID_URL")
             shift 2
             ;;
         --edid-file)
-            EDID_FILE="${2:-}"
+            require_arg "$1" "${2:-}"
+            EDID_FILE="$2"
             REMOTE_ARGS+=(--edid-file "$EDID_FILE")
             shift 2
             ;;
         --pubkey-file)
-            PUBKEY_FILE="${2:-}"
-            REMOTE_ARGS+=(--pubkey-file "$PUBKEY_FILE")
+            require_arg "$1" "${2:-}"
+            PUBKEY_FILE="$2"
+            if [ ! -f "$PUBKEY_FILE" ]; then
+                printf "Error: Public key file not found: %s\n" "$PUBKEY_FILE" >&2
+                exit 1
+            fi
+            PUBKEY_CONTENT="$(cat "$PUBKEY_FILE")"
+            REMOTE_ARGS+=(--pubkey-content "$PUBKEY_CONTENT")
             shift 2
             ;;
         --sudo-user)
-            SUDO_USER="${2:-}"
+            require_arg "$1" "${2:-}"
+            SUDO_USER="$2"
             REMOTE_ARGS+=(--sudo-user "$SUDO_USER")
             shift 2
             ;;
@@ -181,6 +202,22 @@ while [ "$#" -gt 0 ]; do
             ;;
     esac
 done
+
+# Validate input values
+if [ -n "$PI_HOST" ] && [[ "$PI_HOST" == -* ]]; then
+    printf "Error: --host cannot start with '-'\n" >&2
+    exit 1
+fi
+
+if [ -n "$PI_USER" ] && [[ "$PI_USER" == -* ]]; then
+    printf "Error: --user cannot start with '-'\n" >&2
+    exit 1
+fi
+
+if [ -n "$SUDO_USER" ] && [[ "$SUDO_USER" == -* ]]; then
+    printf "Error: --sudo-user cannot start with '-'\n" >&2
+    exit 1
+fi
 
 # ------------------------------------------------------------------------------
 # Local launcher UI/helpers
@@ -232,8 +269,8 @@ cleanup_local() {
 
     LOCAL_CLEANED=true
 
-    if [ -n "${PI_HOST:-}" ] && [ -n "${PI_USER:-}" ] && [ -n "${REMOTE_DEST:-}" ] && [ "${#SSH_OPTS[@]:-0}" -gt 0 ]; then
-        ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "rm -f '$REMOTE_DEST'" >/dev/null 2>&1 || true
+    if [ -n "${PI_HOST:-}" ] && [ -n "${PI_USER:-}" ] && [ -n "${REMOTE_DIR:-}" ] && [ "${#SSH_OPTS[@]:-0}" -gt 0 ]; then
+        ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "rm -rf '$REMOTE_DIR'" >/dev/null 2>&1 || true
     fi
 
     exit "$rc"
@@ -244,13 +281,13 @@ cancel_local() {
     cleanup_local
 }
 
-printf "%b\n" "${C}${BOLD}PiKVM Optimizer${RESET}"
-printf "%b\n" "${DIM}Single-file launcher. The PiKVM-side optimizer is embedded and sent over SSH.${RESET}"
-
 if [ "$PRINT_REMOTE" = true ]; then
     sed -n '/^PIKVM_REMOTE_SCRIPT$/,/^PIKVM_REMOTE_SCRIPT$/p' "$0" | sed '1d;$d'
     exit 0
 fi
+
+printf "%b\n" "${C}${BOLD}PiKVM Optimizer${RESET}"
+printf "%b\n" "${DIM}Single-file launcher. The PiKVM-side optimizer is embedded and sent over SSH.${RESET}"
 
 if [ "$DRY_RUN" = true ]; then
     printf "%b\n" "${Y}${BOLD}DRY RUN ENABLED:${RESET} persistent PiKVM changes will be skipped where possible."
@@ -273,7 +310,8 @@ if [ -z "$SSH_KEY" ]; then
     read -rp "Optional SSH identity file path [default SSH agent/keychain]: " SSH_KEY
 fi
 
-REMOTE_DEST="/tmp/pikvm-optimize.$$.$RANDOM.sh"
+REMOTE_DIR=""
+REMOTE_DEST=""
 
 SSH_OPTS=(
     -o ConnectTimeout=10
@@ -296,9 +334,18 @@ if ! ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "echo ok" >/dev/null; then
     exit 1
 fi
 
+printf "%bCreating secure temp directory...%b\n" "$DIM" "$RESET"
+
+REMOTE_DIR="$(ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "mktemp -d /tmp/pikvm-optimizer.XXXXXXXXXX" 2>/dev/null)" || {
+    printf "%bFailed to create temp directory on PiKVM.%b\n" "$R" "$RESET"
+    exit 1
+}
+
+REMOTE_DEST="${REMOTE_DIR}/optimizer.sh"
+
 printf "%bUploading embedded optimizer...%b\n" "$DIM" "$RESET"
 
-ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "cat > '$REMOTE_DEST' && chmod +x '$REMOTE_DEST'" <<'PIKVM_REMOTE_SCRIPT'
+ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "cat > '$REMOTE_DEST' && chmod 700 '$REMOTE_DEST'" <<'PIKVM_REMOTE_SCRIPT'
 #!/usr/bin/env bash
 # ==============================================================================
 # Embedded PiKVM Remote Optimizer
@@ -338,7 +385,7 @@ UN_SUDO=false
 
 EDID_URL=""
 EDID_FILE=""
-PUBKEY_FILE=""
+PUBKEY_CONTENT=""
 SUDO_USER=""
 
 while [ "$#" -gt 0 ]; do
@@ -463,8 +510,8 @@ while [ "$#" -gt 0 ]; do
             EDID_FILE="${2:-}"
             shift 2
             ;;
-        --pubkey-file)
-            PUBKEY_FILE="${2:-}"
+        --pubkey-content)
+            PUBKEY_CONTENT="${2:-}"
             shift 2
             ;;
         --sudo-user)
@@ -519,6 +566,10 @@ INSTALL_PATH="/usr/local/sbin/pikvm-optimizer"
 BACKUP_FILE=""
 FAN_BACKUP_FILE=""
 INSTALL_BACKUP_FILE=""
+MTU_BACKUP_FILE=""
+EDID_BACKUP_FILE=""
+SSL_BACKUP_FILE=""
+WATCHDOG_BACKUP_FILE=""
 KEY_TARGET_FILE=""
 KEY_INSTALLED_LINE=""
 SUDOERS_FILE=""
@@ -695,13 +746,23 @@ rollback_changes() {
     fi
 
     if [ "$MTU_CHANGED" = true ]; then
-        rm -f /etc/systemd/network/99-tailscale-mtu.link
-        warn "Removed Tailscale MTU link file installed by this run."
+        if [ -n "$MTU_BACKUP_FILE" ] && [ -f "$MTU_BACKUP_FILE" ]; then
+            cp "$MTU_BACKUP_FILE" /etc/systemd/network/99-tailscale-mtu.link || true
+            warn "Restored Tailscale MTU config from backup."
+        else
+            rm -f /etc/systemd/network/99-tailscale-mtu.link
+            warn "Removed Tailscale MTU link file installed by this run."
+        fi
     fi
 
     if [ "$EDID_CHANGED" = true ]; then
-        rm -f /etc/kvmd/tc358743-edid.hex
-        warn "Removed EDID file installed by this run."
+        if [ -n "$EDID_BACKUP_FILE" ] && [ -f "$EDID_BACKUP_FILE" ]; then
+            cp "$EDID_BACKUP_FILE" /etc/kvmd/tc358743-edid.hex || true
+            warn "Restored EDID file from backup."
+        else
+            rm -f /etc/kvmd/tc358743-edid.hex
+            warn "Removed EDID file installed by this run."
+        fi
     fi
 
     if [ "$SSL_CHANGED" = true ]; then
@@ -736,13 +797,15 @@ rollback_changes() {
 
 cleanup_remote() {
     local rc=$?
+    local script_dir
+    script_dir="$(cd "$(dirname "$0")" && pwd)"
 
     if [ "$SUCCESS" != true ] && [ "$rc" -ne 0 ]; then
         rollback_changes
     fi
 
     make_ro
-    rm -f /tmp/pikvm-optimizer.*.yaml /tmp/pikvm-yaml-merge.py 2>/dev/null || true
+    rm -rf "$script_dir" 2>/dev/null || true
     printf "%b" "$SHOW_CURSOR"
     exit "$rc"
 }
@@ -775,6 +838,7 @@ service_exists() {
 
 restart_service_if_exists() {
     local svc="$1"
+    local fatal="${2:-false}"
 
     if [ "$DRY_RUN" = true ]; then
         info "DRY RUN: would restart $svc if present."
@@ -782,7 +846,13 @@ restart_service_if_exists() {
     fi
 
     if service_exists "$svc"; then
-        systemctl restart "$svc" >/dev/null 2>&1 || warn "Could not restart $svc."
+        if ! systemctl restart "$svc" >/dev/null 2>&1; then
+            warn "Could not restart $svc."
+            if [ "$fatal" = true ]; then
+                err "Fatal: service restart failed for $svc"
+                return 1
+            fi
+        fi
     else
         warn "Service $svc not found; skipped restart."
     fi
@@ -843,7 +913,11 @@ config_is_empty_or_trivial() {
 }
 
 write_yaml_merge_helper() {
-    cat > /tmp/pikvm-yaml-merge.py <<'PY'
+    local script_dir
+    script_dir="$(cd "$(dirname "$0")" && pwd)"
+    local helper="${script_dir}/pikvm-yaml-merge.py"
+
+    cat > "$helper" <<'PY'
 #!/usr/bin/env python3
 import sys
 import yaml
@@ -888,11 +962,15 @@ out_path.write_text(
 )
 PY
 
-    chmod +x /tmp/pikvm-yaml-merge.py
+    chmod +x "$helper"
 }
 
 write_yaml_delete_helper() {
-    cat > /tmp/pikvm-yaml-delete.py <<'PY'
+    local script_dir
+    script_dir="$(cd "$(dirname "$0")" && pwd)"
+    local helper="${script_dir}/pikvm-yaml-delete.py"
+
+    cat > "$helper" <<'PY'
 #!/usr/bin/env python3
 import sys
 import yaml
@@ -949,7 +1027,7 @@ out_path.write_text(
 )
 PY
 
-    chmod +x /tmp/pikvm-yaml-delete.py
+    chmod +x "$helper"
 }
 
 print_patch_for_manual_merge() {
@@ -994,7 +1072,9 @@ manual_yaml_fallback() {
 
 fallback_write_clean_config() {
     local patch_file="$1"
-    local work_file="/tmp/pikvm-optimizer.clean.yaml"
+    local script_dir
+    script_dir="$(cd "$(dirname "$0")" && pwd)"
+    local work_file="${script_dir}/pikvm-optimizer.clean.yaml"
 
     cp "$patch_file" "$work_file"
 
@@ -1006,7 +1086,9 @@ fallback_write_clean_config() {
         fi
 
         make_rw
-        cp "$work_file" "$CONFIG_FILE"
+        local atomic_tmp="${CONFIG_FILE}.tmp.$$"
+        cp "$work_file" "$atomic_tmp"
+        mv -f "$atomic_tmp" "$CONFIG_FILE"
         CONFIG_CHANGED=true
         ok "PyYAML missing, but config was empty/trivial; wrote clean override.yaml."
     else
@@ -1017,11 +1099,13 @@ fallback_write_clean_config() {
 
 merge_yaml_patch() {
     local patch_file="$1"
-    local work_file="/tmp/pikvm-optimizer.merged.yaml"
+    local script_dir
+    script_dir="$(cd "$(dirname "$0")" && pwd)"
+    local work_file="${script_dir}/pikvm-optimizer.merged.yaml"
 
     if python_yaml_available; then
         write_yaml_merge_helper
-        python3 /tmp/pikvm-yaml-merge.py "$CONFIG_FILE" "$patch_file" "$work_file"
+        python3 "${script_dir}/pikvm-yaml-merge.py" "$CONFIG_FILE" "$patch_file" "$work_file"
 
         if validate_kvmd_config "$work_file"; then
             if [ "$DRY_RUN" = true ]; then
@@ -1030,7 +1114,9 @@ merge_yaml_patch() {
             fi
 
             make_rw
-            cp "$work_file" "$CONFIG_FILE"
+            local atomic_tmp="${CONFIG_FILE}.tmp.$$"
+            cp "$work_file" "$atomic_tmp"
+            mv -f "$atomic_tmp" "$CONFIG_FILE"
             CONFIG_CHANGED=true
             ok "Validated and applied config update."
         else
@@ -1054,7 +1140,9 @@ merge_yaml_patch() {
 }
 
 delete_yaml_paths() {
-    local work_file="/tmp/pikvm-optimizer.deleted.yaml"
+    local script_dir
+    script_dir="$(cd "$(dirname "$0")" && pwd)"
+    local work_file="${script_dir}/pikvm-optimizer.deleted.yaml"
 
     if ! python_yaml_available; then
         warn "Python YAML module missing; cannot safely remove YAML keys."
@@ -1063,7 +1151,7 @@ delete_yaml_paths() {
     fi
 
     write_yaml_delete_helper
-    python3 /tmp/pikvm-yaml-delete.py "$CONFIG_FILE" "$work_file" "$@"
+    python3 "${script_dir}/pikvm-yaml-delete.py" "$CONFIG_FILE" "$work_file" "$@"
 
     if validate_kvmd_config "$work_file"; then
         if [ "$DRY_RUN" = true ]; then
@@ -1072,7 +1160,9 @@ delete_yaml_paths() {
         fi
 
         make_rw
-        cp "$work_file" "$CONFIG_FILE"
+        local atomic_tmp="${CONFIG_FILE}.tmp.$$"
+        cp "$work_file" "$atomic_tmp"
+        mv -f "$atomic_tmp" "$CONFIG_FILE"
         CONFIG_CHANGED=true
         ok "YAML cleanup applied."
     else
@@ -1331,6 +1421,12 @@ apply_tailscale_mtu() {
     make_rw
     mkdir -p /etc/systemd/network
 
+    if [ -f /etc/systemd/network/99-tailscale-mtu.link ]; then
+        MTU_BACKUP_FILE="/etc/systemd/network/99-tailscale-mtu.link.bak.$(date +%Y%m%d-%H%M%S)"
+        cp /etc/systemd/network/99-tailscale-mtu.link "$MTU_BACKUP_FILE"
+        ok "Backed up existing MTU config to $MTU_BACKUP_FILE"
+    fi
+
     cat > /etc/systemd/network/99-tailscale-mtu.link <<'EOF'
 [Match]
 OriginalName=tailscale0
@@ -1389,17 +1485,45 @@ EOF
 
     make_rw
 
+    if [ -f "$edid_dest" ]; then
+        EDID_BACKUP_FILE="${edid_dest}.bak.$(date +%Y%m%d-%H%M%S)"
+        cp "$edid_dest" "$EDID_BACKUP_FILE"
+        ok "Backed up existing EDID to $EDID_BACKUP_FILE"
+    fi
+
     if [[ "$edid_source" =~ ^https?:// ]]; then
+        if [[ "$edid_source" =~ ^http:// ]]; then
+            warn "HTTP not allowed for EDID downloads; use HTTPS."
+            return 0
+        fi
+
         if ! command -v curl >/dev/null 2>&1; then
             warn "curl not installed; cannot download EDID."
             return 0
         fi
 
-        if ! curl -fsSL -o "$edid_dest" "$edid_source"; then
+        local edid_tmp
+        edid_tmp="$(mktemp /tmp/pikvm-edid.XXXXXXXXXX)"
+
+        if ! curl -fsSL --max-time 30 --max-filesize 1048576 -o "$edid_tmp" "$edid_source"; then
             warn "Failed to download EDID."
+            rm -f "$edid_tmp"
             return 0
         fi
 
+        if ! file "$edid_tmp" | grep -qi "text"; then
+            warn "Downloaded EDID is not a text file; rejected."
+            rm -f "$edid_tmp"
+            return 0
+        fi
+
+        if [ "$(wc -c < "$edid_tmp" | tr -d ' ')" -gt 65536 ]; then
+            warn "Downloaded EDID is too large (>64KB); rejected."
+            rm -f "$edid_tmp"
+            return 0
+        fi
+
+        mv "$edid_tmp" "$edid_dest"
         EDID_CHANGED=true
     else
         if [ ! -f "$edid_source" ]; then
@@ -1445,6 +1569,14 @@ apply_tailscale_ssl() {
 
     make_rw
     mkdir -p /etc/kvmd/nginx/ssl
+
+    if [ -f /etc/kvmd/nginx/ssl/server.crt ] || [ -f /etc/kvmd/nginx/ssl/server.key ]; then
+        SSL_BACKUP_DIR="/etc/kvmd/nginx/ssl.bak.$(date +%Y%m%d-%H%M%S)"
+        mkdir -p "$SSL_BACKUP_DIR"
+        [ -f /etc/kvmd/nginx/ssl/server.crt ] && cp /etc/kvmd/nginx/ssl/server.crt "$SSL_BACKUP_DIR/"
+        [ -f /etc/kvmd/nginx/ssl/server.key ] && cp /etc/kvmd/nginx/ssl/server.key "$SSL_BACKUP_DIR/"
+        ok "Backed up existing SSL certs to $SSL_BACKUP_DIR"
+    fi
 
     if tailscale cert \
         --cert-file /etc/kvmd/nginx/ssl/server.crt \
@@ -1520,6 +1652,13 @@ apply_tailscale_watchdog() {
 
     make_rw
 
+    if [ -f /usr/local/bin/pikvm-tailscale-watchdog.sh ]; then
+        WATCHDOG_BACKUP_DIR="/usr/local/bin/pikvm-tailscale-watchdog.sh.bak.$(date +%Y%m%d-%H%M%S)"
+        mkdir -p "$WATCHDOG_BACKUP_DIR"
+        cp /usr/local/bin/pikvm-tailscale-watchdog.sh "$WATCHDOG_BACKUP_DIR/"
+        ok "Backed up existing watchdog script to $WATCHDOG_BACKUP_DIR"
+    fi
+
     cat > /usr/local/bin/pikvm-tailscale-watchdog.sh <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -1538,6 +1677,14 @@ fi
 EOF
 
     chmod +x /usr/local/bin/pikvm-tailscale-watchdog.sh
+
+    if [ -f /etc/systemd/system/pikvm-tailscale-watchdog.service ] || [ -f /etc/systemd/system/pikvm-tailscale-watchdog.timer ]; then
+        WATCHDOG_BACKUP_DIR="/etc/systemd/system/pikvm-tailscale-watchdog.bak.$(date +%Y%m%d-%H%M%S)"
+        mkdir -p "$WATCHDOG_BACKUP_DIR"
+        [ -f /etc/systemd/system/pikvm-tailscale-watchdog.service ] && cp /etc/systemd/system/pikvm-tailscale-watchdog.service "$WATCHDOG_BACKUP_DIR/"
+        [ -f /etc/systemd/system/pikvm-tailscale-watchdog.timer ] && cp /etc/systemd/system/pikvm-tailscale-watchdog.timer "$WATCHDOG_BACKUP_DIR/"
+        ok "Backed up existing watchdog service/timer to $WATCHDOG_BACKUP_DIR"
+    fi
 
     cat > /etc/systemd/system/pikvm-tailscale-watchdog.service <<'EOF'
 [Unit]
@@ -1577,12 +1724,8 @@ apply_ssh_key() {
     local pubkey=""
     local home_dir=""
 
-    if [ -n "$PUBKEY_FILE" ]; then
-        if [ ! -f "$PUBKEY_FILE" ]; then
-            warn "Public key file not found: $PUBKEY_FILE"
-            return 0
-        fi
-        pubkey="$(cat "$PUBKEY_FILE")"
+    if [ -n "$PUBKEY_CONTENT" ]; then
+        pubkey="$PUBKEY_CONTENT"
         target_user="root"
     elif [ "$YES" = true ]; then
         warn "SSH key install requires --pubkey-file for non-interactive mode; skipped."
@@ -1628,12 +1771,22 @@ apply_ssh_key() {
 
     make_rw
 
-    mkdir -p "$home_dir/.ssh"
-    chmod 700 "$home_dir/.ssh"
+    local ssh_dir="$home_dir/.ssh"
+    local auth_file="$ssh_dir/authorized_keys"
 
-    KEY_TARGET_FILE="$home_dir/.ssh/authorized_keys"
+    if [ -L "$ssh_dir" ] || [ -L "$auth_file" ]; then
+        warn "Refusing to modify symlinked .ssh directory or authorized_keys; security risk."
+        return 0
+    fi
+
+    mkdir -p "$ssh_dir"
+    chmod 700 "$ssh_dir"
+    chown "$target_user:$target_user" "$ssh_dir" 2>/dev/null || true
+
+    KEY_TARGET_FILE="$auth_file"
     touch "$KEY_TARGET_FILE"
     chmod 600 "$KEY_TARGET_FILE"
+    chown "$target_user:$target_user" "$KEY_TARGET_FILE" 2>/dev/null || true
 
     if ! grep -qxF "$pubkey" "$KEY_TARGET_FILE"; then
         printf "%s\n" "$pubkey" >> "$KEY_TARGET_FILE"
@@ -1992,8 +2145,10 @@ restore_from_backup() {
 
     make_rw
     cp "$CONFIG_FILE" "${CONFIG_FILE}.pre-restore.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
-    cp "$selected" "$CONFIG_FILE"
-    restart_service_if_exists kvmd.service
+    local atomic_tmp="${CONFIG_FILE}.tmp.$$"
+    cp "$selected" "$atomic_tmp"
+    mv -f "$atomic_tmp" "$CONFIG_FILE"
+    restart_service_if_exists kvmd.service true
     ok "Restored $CONFIG_FILE from $selected."
 }
 
@@ -2091,7 +2246,7 @@ final_restart() {
     fi
 
     systemctl daemon-reload >/dev/null 2>&1 || true
-    restart_service_if_exists kvmd.service
+    restart_service_if_exists kvmd.service true
 
     if [ "${RUN_SSL:-false}" = true ]; then
         restart_service_if_exists kvmd-nginx.service
