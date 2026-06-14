@@ -273,6 +273,11 @@ cleanup_local() {
         ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "rm -rf '$REMOTE_DIR'" >/dev/null 2>&1 || true
     fi
 
+    # Close SSH multiplexed connection
+    if [ -n "${PI_HOST:-}" ] && [ -n "${PI_USER:-}" ] && [ "${#SSH_OPTS[@]:-0}" -gt 0 ]; then
+        ssh -O exit "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" >/dev/null 2>&1 || true
+    fi
+
     exit "$rc"
 }
 
@@ -318,6 +323,9 @@ SSH_OPTS=(
     -o ServerAliveInterval=15
     -o ServerAliveCountMax=2
     -o StrictHostKeyChecking=accept-new
+    -o ControlMaster=auto
+    -o ControlPath="/tmp/pikvm-optimizer-ssh-%r@%h:%p"
+    -o ControlPersist=60
 )
 
 if [ -n "$SSH_KEY" ]; then
@@ -1105,6 +1113,54 @@ merge_yaml_patch() {
 
     if python_yaml_available; then
         write_yaml_merge_helper
+
+        if ! python3 -c "import yaml; yaml.safe_load(open('$CONFIG_FILE').read())" >/dev/null 2>&1; then
+            warn "Existing $CONFIG_FILE has malformed YAML. Cannot safely merge."
+            warn "Options:"
+            warn "  1) Backup and replace with patch (recommended if config is broken)"
+            warn "  2) Skip this module and keep broken config"
+            if [ "$DRY_RUN" = true ]; then
+                ok "DRY RUN: would offer to replace malformed config."
+                return 0
+            fi
+            if [ "$YES" = true ]; then
+                info "Non-interactive mode: backing up and replacing malformed config."
+                cp "$patch_file" "$work_file"
+                if validate_kvmd_config "$work_file"; then
+                    make_rw
+                    local atomic_tmp="${CONFIG_FILE}.tmp.$$"
+                    cp "$work_file" "$atomic_tmp"
+                    mv -f "$atomic_tmp" "$CONFIG_FILE"
+                    CONFIG_CHANGED=true
+                    ok "Replaced malformed config with patch."
+                    return 0
+                else
+                    err "Patch config also fails validation; not replacing."
+                    return 1
+                fi
+            fi
+            printf "Replace malformed config with this module's config? [y/N]: "
+            read -r choice
+            if [[ "$choice" =~ ^[Yy]$ ]]; then
+                cp "$patch_file" "$work_file"
+                if validate_kvmd_config "$work_file"; then
+                    make_rw
+                    local atomic_tmp="${CONFIG_FILE}.tmp.$$"
+                    cp "$work_file" "$atomic_tmp"
+                    mv -f "$atomic_tmp" "$CONFIG_FILE"
+                    CONFIG_CHANGED=true
+                    ok "Replaced malformed config with patch."
+                    return 0
+                else
+                    err "Patch config also fails validation; not replacing."
+                    return 1
+                fi
+            else
+                warn "Skipping config update for this module."
+                return 0
+            fi
+        fi
+
         python3 "${script_dir}/pikvm-yaml-merge.py" "$CONFIG_FILE" "$patch_file" "$work_file"
 
         if validate_kvmd_config "$work_file"; then
