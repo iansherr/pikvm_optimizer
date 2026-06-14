@@ -70,8 +70,8 @@ Module flags:
   --key              Enable SSH public key install module
   --pubkey-file PATH SSH public key file for non-interactive install
   --install          Install optimizer permanently on PiKVM
-  --sudo             Configure restricted NOPASSWD sudo for installed optimizer
-  --sudo-user USER   User for restricted sudo (non-interactive)
+  # --sudo             Configure restricted NOPASSWD sudo for installed optimizer (DISABLED)
+  # --sudo-user USER   User for restricted sudo (non-interactive) (DISABLED)
 
 Other:
   --print-remote     Print embedded remote script and exit
@@ -1343,7 +1343,7 @@ interactive_module_menu() {
         box_line "[6] [$(yn_marker "$RUN_WATCHDOG")] Tailscale watchdog"
         box_line "[7] [$(yn_marker "$RUN_KEY")] Install SSH public key"
         box_line "[8] [$(yn_marker "$RUN_INSTALL")] Install optimizer permanently"
-        box_line "[9] [$(yn_marker "$RUN_SUDO")] Restricted NOPASSWD sudo for installed optimizer"
+        # box_line "[9] [$(yn_marker "$RUN_SUDO")] Restricted NOPASSWD sudo for installed optimizer" (DISABLED)
         box_line ""
         close_box
 
@@ -1352,11 +1352,11 @@ interactive_module_menu() {
 
         case "$choice" in
             "")
-                if [ "$RUN_SUDO" = true ] && [ "$RUN_INSTALL" != true ]; then
-                    RUN_INSTALL=true
-                    warn "Restricted sudo requires permanent install; install module enabled."
-                    sleep 1
-                fi
+                # if [ "$RUN_SUDO" = true ] && [ "$RUN_INSTALL" != true ]; then
+                #     RUN_INSTALL=true
+                #     warn "Restricted sudo requires permanent install; install module enabled."
+                #     sleep 1
+                # fi
                 return 0
                 ;;
             1) toggle_bool RUN_CORE ;;
@@ -1367,12 +1367,12 @@ interactive_module_menu() {
             6) toggle_bool RUN_WATCHDOG ;;
             7) toggle_bool RUN_KEY ;;
             8) toggle_bool RUN_INSTALL ;;
-            9)
-                toggle_bool RUN_SUDO
-                if [ "$RUN_SUDO" = true ]; then
-                    RUN_INSTALL=true
-                fi
-                ;;
+            # 9)
+            #     toggle_bool RUN_SUDO
+            #     if [ "$RUN_SUDO" = true ]; then
+            #         RUN_INSTALL=true
+            #     fi
+            #     ;;
             a|A) apply_all_preset ;;
             n|N) apply_none_preset ;;
             r|R) apply_recommended_preset ;;
@@ -1416,7 +1416,7 @@ interactive_uninstall_menu() {
         box_line "[6] [$(yn_marker "$UN_WATCHDOG")] Remove Tailscale watchdog"
         box_line "[7] [$(yn_marker "$UN_KEY")] Remove SSH public key from authorized_keys"
         box_line "[8] [$(yn_marker "$UN_INSTALL")] Remove permanent optimizer install"
-        box_line "[9] [$(yn_marker "$UN_SUDO")] Remove restricted sudoers rule"
+        # box_line "[9] [$(yn_marker "$UN_SUDO")] Remove restricted sudoers rule" (DISABLED)
         box_line ""
         close_box
 
@@ -1435,7 +1435,7 @@ interactive_uninstall_menu() {
             6) toggle_bool UN_WATCHDOG ;;
             7) toggle_bool UN_KEY ;;
             8) toggle_bool UN_INSTALL ;;
-            9) toggle_bool UN_SUDO ;;
+            # 9) toggle_bool UN_SUDO ;;
             a|A)
                 UN_CORE=true
                 UN_MTU=true
@@ -2505,7 +2505,7 @@ enable_oled_if_present
 if [ "$RUN_WATCHDOG" = true ]; then apply_tailscale_watchdog; fi
 if [ "$RUN_KEY" = true ]; then apply_ssh_key; fi
 if [ "$RUN_INSTALL" = true ]; then install_optimizer_permanently; fi
-if [ "$RUN_SUDO" = true ]; then apply_restricted_sudo; fi
+# if [ "$RUN_SUDO" = true ]; then apply_restricted_sudo; fi (DISABLED)
 
 final_restart
 health_check
