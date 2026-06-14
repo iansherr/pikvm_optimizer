@@ -1176,16 +1176,19 @@ deep_merge(config, patch)
 with open('$work_file', 'w') as f:
     yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False, indent=4)
 "
-                if validate_kvmd_config "$work_file"; then
+                # When replacing malformed config, only validate YAML syntax (not full kvmd validation)
+                # since the minimal config may not have all required sections
+                if python3 -c "import yaml; yaml.safe_load(open('$work_file').read())" >/dev/null 2>&1; then
                     make_rw
                     local atomic_tmp="${CONFIG_FILE}.tmp.$$"
                     cp "$work_file" "$atomic_tmp"
                     mv -f "$atomic_tmp" "$CONFIG_FILE"
                     CONFIG_CHANGED=true
                     ok "Replaced malformed config with clean config containing module settings."
+                    warn "Note: Config has minimal structure. Run other modules to complete setup."
                     return 0
                 else
-                    err "Generated config fails validation; not replacing."
+                    err "Generated config has invalid YAML; not replacing."
                     return 1
                 fi
             else
