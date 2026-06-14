@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-06-14
+
+### Added
+
+- `--reboot` flag to auto-reboot PiKVM after changes
+- Post-run reboot warning for MTU/EDID modules
+- 5-second delay before reboot with Ctrl+C cancel option
+
+### Changed
+
+- Service restarts are non-fatal; script continues on failure
+- SSH connection multiplexing (ControlMaster) for single auth prompt
+- Health check warnings don't trigger rollback
+- Malformed config replacement uses YAML syntax validation only
+
+### Fixed
+
+- `set +e` in remote script to prevent premature exit on errors
+- Bad substitution fix: `${#SSH_OPTS[@]:-0}` → `${#SSH_OPTS[@]}`
+- `final_restart` non-fatal; `health_check` non-fatal
+- `--print-remote` outputs only remote script
+- SSH key prompt clarity improved
+- UI box line truncation for long paths
+
 ## [1.1.0] - 2026-06-14
 
 ### Security

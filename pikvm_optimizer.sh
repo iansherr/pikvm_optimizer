@@ -2,12 +2,12 @@
 # ==============================================================================
 # PiKVM Optimizer
 # Single-file macOS/Linux launcher with embedded PiKVM remote optimizer.
-# Version: 1.0.0
+# Version: 1.2.0
 # ==============================================================================
 
 set -euo pipefail
 
-VERSION="1.0.0"
+VERSION="1.2.0"
 
 # ------------------------------------------------------------------------------
 # Local launcher options
