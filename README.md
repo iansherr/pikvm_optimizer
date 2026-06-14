@@ -162,6 +162,10 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
+## Versioning
+
+This project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html). For the available versions, see the [CHANGELOG.md](CHANGELOG.md) or the tags on this repository.
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
