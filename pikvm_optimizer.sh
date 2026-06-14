@@ -2343,10 +2343,10 @@ final_restart() {
     fi
 
     systemctl daemon-reload >/dev/null 2>&1 || true
-    restart_service_if_exists kvmd.service true
+    restart_service_if_exists kvmd.service false
 
     if [ "${RUN_SSL:-false}" = true ]; then
-        restart_service_if_exists kvmd-nginx.service
+        restart_service_if_exists kvmd-nginx.service false
     fi
 
     ok "Service refresh complete."
@@ -2510,7 +2510,7 @@ if [ "$RUN_KEY" = true ]; then apply_ssh_key; fi
 if [ "$RUN_INSTALL" = true ]; then install_optimizer_permanently; fi
 # if [ "$RUN_SUDO" = true ]; then apply_restricted_sudo; fi (DISABLED)
 
-final_restart
+final_restart || true
 health_check
 
 SUCCESS=true
