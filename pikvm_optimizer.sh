@@ -1117,42 +1117,75 @@ merge_yaml_patch() {
         if ! python3 -c "import yaml; yaml.safe_load(open('$CONFIG_FILE').read())" >/dev/null 2>&1; then
             warn "Existing $CONFIG_FILE has malformed YAML. Cannot safely merge."
             warn "Options:"
-            warn "  1) Backup and replace with patch (recommended if config is broken)"
+            warn "  1) Backup and replace with clean config containing this module's settings (recommended)"
             warn "  2) Skip this module and keep broken config"
             if [ "$DRY_RUN" = true ]; then
                 ok "DRY RUN: would offer to replace malformed config."
                 return 0
             fi
             if [ "$YES" = true ]; then
-                info "Non-interactive mode: backing up and replacing malformed config."
-                cp "$patch_file" "$work_file"
+                info "Non-interactive mode: backing up and replacing malformed config with clean config."
+                # Create a minimal valid kvmd config with the patch applied
+                python3 -c "
+import yaml, sys
+with open('$patch_file') as f:
+    patch = yaml.safe_load(f)
+# Start with minimal valid config
+config = {'kvmd': {}}
+# Deep merge patch into config
+def deep_merge(base, patch):
+    for key, value in patch.items():
+        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+            deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+deep_merge(config, patch)
+with open('$work_file', 'w') as f:
+    yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False, indent=4)
+"
                 if validate_kvmd_config "$work_file"; then
                     make_rw
                     local atomic_tmp="${CONFIG_FILE}.tmp.$$"
                     cp "$work_file" "$atomic_tmp"
                     mv -f "$atomic_tmp" "$CONFIG_FILE"
                     CONFIG_CHANGED=true
-                    ok "Replaced malformed config with patch."
+                    ok "Replaced malformed config with clean config containing module settings."
                     return 0
                 else
-                    err "Patch config also fails validation; not replacing."
+                    err "Generated config fails validation; not replacing."
                     return 1
                 fi
             fi
-            printf "Replace malformed config with this module's config? [y/N]: "
+            printf "Replace malformed config with clean config containing this module's settings? [y/N]: "
             read -r choice
             if [[ "$choice" =~ ^[Yy]$ ]]; then
-                cp "$patch_file" "$work_file"
+                python3 -c "
+import yaml, sys
+with open('$patch_file') as f:
+    patch = yaml.safe_load(f)
+config = {'kvmd': {}}
+def deep_merge(base, patch):
+    for key, value in patch.items():
+        if key in base and isinstance(base[key], dict) and isinstance(value, dict):
+            deep_merge(base[key], value)
+        else:
+            base[key] = value
+    return base
+deep_merge(config, patch)
+with open('$work_file', 'w') as f:
+    yaml.safe_dump(config, f, default_flow_style=False, sort_keys=False, indent=4)
+"
                 if validate_kvmd_config "$work_file"; then
                     make_rw
                     local atomic_tmp="${CONFIG_FILE}.tmp.$$"
                     cp "$work_file" "$atomic_tmp"
                     mv -f "$atomic_tmp" "$CONFIG_FILE"
                     CONFIG_CHANGED=true
-                    ok "Replaced malformed config with patch."
+                    ok "Replaced malformed config with clean config containing module settings."
                     return 0
                 else
-                    err "Patch config also fails validation; not replacing."
+                    err "Generated config fails validation; not replacing."
                     return 1
                 fi
             else
