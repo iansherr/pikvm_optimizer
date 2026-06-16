@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-06-16
+
+### Added
+
+- `--tailscale-crash-fix` module: 32-bit ARM crash mitigations for Tailscale gVisor alignment bug
+  - Auto-detects architecture via `uname -m` (ignores on 64-bit aarch64/amd64)
+  - On 32-bit ARM: disables IPv6 on tailscale0, sets systemd WatchdogSec=15s + RestartSec=1s
+  - Reduces crash cycle downtime from ~38s to ~23s
+- `--msd-bios-fix` module: MSD BIOS compatibility mode with UEFI/NVRAM workaround
+- `--usb-preset` module: USB device preset configuration (Normal/BIOS safe mode)
+- `--usb-extra` module: USB extras (Ethernet/Serial/Audio) with interactive multi-select
+- `--msd-storage` module: Network storage mount (NFS/SMB) for MSD ISO images
+- `--msd-drives` module: Dual MSD virtual drives (HDD + CD-ROM) support
+- `--override-d` module: override.d YAML fragment directory support
+- `--tailscale-diag` module: read-only Tailscale networking diagnosis
+- `detect_arch()` helper function for architecture-specific logic
+- `--none` flag now properly passed through local launcher to remote script
+- `--tailscale-crash-fix` flag in `--all` preset, interactive menu (`c` key), and uninstall menu
+
+### Changed
+
+- `--all` preset includes all new modules (crash fix, MSD fix, USB preset, USB extras, MSD storage, MSD drives, override.d)
+- Interactive module menu reorganized with letter-key bindings for extended module set
+- Version bumped from 1.2.0 to 1.3.0
+
+### Fixed
+
+- `run_tailscale_diag` → `apply_tailscale_diag` function name mismatch in execution block
+- `$VERSION` unbound variable error in remote script mode when not passed as flag
+- Stale README file in `/etc/kvmd/override.d/` breaking `kvmd -M` YAML validation
+
 ## [1.2.0] - 2026-06-14
 
 ### Added

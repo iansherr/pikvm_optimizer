@@ -2,12 +2,12 @@
 # ==============================================================================
 # PiKVM Optimizer
 # Single-file macOS/Linux launcher with embedded PiKVM remote optimizer.
-# Version: 1.2.0
+# Version: 1.3.0
 # ==============================================================================
 
 set -euo pipefail
 
-VERSION="1.2.0"
+VERSION="1.3.0"
 
 # ------------------------------------------------------------------------------
 # Local launcher options
@@ -68,6 +68,16 @@ Module flags:
   --ssl              Enable Tailscale SSL module
   --fan              Enable fan curve module
   --watchdog         Enable Tailscale watchdog module
+  --quality-cap      Enable VNC JPEG quality cap (fixes Screens client issues)
+  --keepalive        Enable TCP keepalive tuning for Tailscale stability
+  --tailscale-diag   Run Tailscale networking diagnosis (read-only)
+  --tailscale-crash-fix  Enable Tailscale crash mitigations for 32-bit ARM (auto-detects arch)
+  --msd-bios-fix     Enable MSD BIOS compatibility mode (fixes UEFI boot-loop)
+  --usb-preset       Configure USB device preset (Normal/BIOS mode)
+  --usb-extra        Enable USB extras (Ethernet/Serial/Audio)
+  --msd-storage      Configure network storage mount for MSD ISOs
+  --msd-drives       Enable additional MSD virtual drives
+  --override-d       Enable override.d YAML fragment support
   --key              Enable SSH public key install module
   --pubkey-file PATH SSH public key file for non-interactive install
   --install          Install optimizer permanently on PiKVM
@@ -146,7 +156,7 @@ while [ "$#" -gt 0 ]; do
             REMOTE_ARGS+=(--none)
             shift
             ;;
-        --core|--no-core|--mtu|--edid|--ssl|--fan|--watchdog|--key|--install|--sudo)
+        --core|--no-core|--mtu|--edid|--ssl|--fan|--watchdog|--key|--install|--sudo|--quality-cap|--keepalive|--tailscale-diag|--tailscale-crash-fix|--msd-bios-fix|--usb-preset|--usb-extra|--msd-storage|--msd-drives|--override-d)
             REMOTE_ARGS+=("$1")
             shift
             ;;
@@ -298,8 +308,10 @@ if [ "$PRINT_REMOTE" = true ]; then
     exit 0
 fi
 
-printf "%b\n" "${C}${BOLD}PiKVM Optimizer${RESET}"
-printf "%b\n" "${DIM}Single-file launcher. The PiKVM-side optimizer is embedded and sent over SSH.${RESET}"
+printf "%b\n" "${C}${BOLD}╔══════════════════════════════════════════════════════════════════════════════╗${RESET}"
+printf "%b%s%b\n" "${C}${BOLD}║${RESET}" "  PiKVM Optimizer v${VERSION}                                  $(date +%Y-%m-%d)  ${C}${BOLD}║${RESET}"
+printf "%b%s%b\n" "${C}${BOLD}║${RESET}" "  Single-file macOS/Linux launcher with embedded PiKVM remote optimizer    ${C}${BOLD}║${RESET}"
+printf "%b\n" "${C}${BOLD}╚══════════════════════════════════════════════════════════════════════════════╝${RESET}"
 
 if [ "$DRY_RUN" = true ]; then
     printf "%b\n" "${Y}${BOLD}DRY RUN ENABLED:${RESET} persistent PiKVM changes will be skipped where possible."
@@ -344,24 +356,26 @@ fi
 
 trap cancel_local INT TERM
 
-printf "\n%bTesting SSH access...%b\n" "$DIM" "$RESET"
+printf "\n%b  Testing SSH access...%b" "$DIM" "$RESET"
 
 if ! ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "echo ok" >/dev/null; then
-    printf "%bSSH login failed.%b\n" "$R" "$RESET"
-    printf "Use the PiKVM Linux SSH account, usually root, not just the web UI account.\n"
+    printf "\r%b  [ERR] SSH login failed.%b\n" "$R" "$RESET"
+    printf "  Use the PiKVM Linux SSH account, usually root, not just the web UI account.\n"
     exit 1
 fi
+printf "\r%b  [OK] SSH connection established.%b\n" "$G" "$RESET"
 
-printf "%bCreating secure temp directory...%b\n" "$DIM" "$RESET"
+printf "%b  Creating secure temp directory...%b" "$DIM" "$RESET"
 
 REMOTE_DIR="$(ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "mktemp -d /tmp/pikvm-optimizer.XXXXXXXXXX" 2>/dev/null)" || {
-    printf "%bFailed to create temp directory on PiKVM.%b\n" "$R" "$RESET"
+    printf "\r%b  [ERR] Failed to create temp directory on PiKVM.%b\n" "$R" "$RESET"
     exit 1
 }
+printf "\r%b  [OK] Temp directory created.%b\n" "$G" "$RESET"
 
 REMOTE_DEST="${REMOTE_DIR}/optimizer.sh"
 
-printf "%bUploading embedded optimizer...%b\n" "$DIM" "$RESET"
+printf "  Uploading embedded optimizer...\n"
 
 ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "cat > '$REMOTE_DEST' && chmod 700 '$REMOTE_DEST'" <<'PIKVM_REMOTE_SCRIPT'
 #!/usr/bin/env bash
@@ -391,6 +405,8 @@ RUN_WATCHDOG=false
 RUN_KEY=false
 RUN_INSTALL=false
 RUN_SUDO=false
+RUN_QUALITY_CAP=false
+RUN_KEEPALIVE=false
 
 UN_CORE=false
 UN_MTU=false
@@ -401,6 +417,25 @@ UN_WATCHDOG=false
 UN_KEY=false
 UN_INSTALL=false
 UN_SUDO=false
+UN_QUALITY_CAP=false
+UN_KEEPALIVE=false
+
+RUN_TAILSCALE_DIAG=false
+RUN_TAILSCALE_CRASH_FIX=false
+RUN_MSD_BIOS_FIX=false
+RUN_USB_PRESET=false
+RUN_USB_EXTRA=false
+RUN_MSD_STORAGE=false
+RUN_MSD_DRIVES=false
+RUN_OVERRIDE_D=false
+
+UN_MSD_BIOS_FIX=false
+UN_TAILSCALE_CRASH_FIX=false
+UN_USB_PRESET=false
+UN_USB_EXTRA=false
+UN_MSD_STORAGE=false
+UN_MSD_DRIVES=false
+UN_OVERRIDE_D=false
 
 EDID_URL=""
 EDID_FILE=""
@@ -441,6 +476,15 @@ while [ "$#" -gt 0 ]; do
             RUN_KEY=false
             RUN_INSTALL=false
             RUN_SUDO=false
+            RUN_QUALITY_CAP=false
+            RUN_KEEPALIVE=false
+            RUN_TAILSCALE_DIAG=false
+            RUN_MSD_BIOS_FIX=true
+            RUN_USB_PRESET=false
+            RUN_USB_EXTRA=false
+            RUN_MSD_STORAGE=false
+            RUN_MSD_DRIVES=false
+            RUN_OVERRIDE_D=false
             shift
             ;;
         --all)
@@ -454,6 +498,16 @@ while [ "$#" -gt 0 ]; do
             RUN_KEY=true
             RUN_INSTALL=true
             RUN_SUDO=false
+            RUN_QUALITY_CAP=true
+            RUN_KEEPALIVE=true
+            RUN_TAILSCALE_DIAG=true
+            RUN_TAILSCALE_CRASH_FIX=true
+            RUN_MSD_BIOS_FIX=true
+            RUN_USB_PRESET=true
+            RUN_USB_EXTRA=true
+            RUN_MSD_STORAGE=true
+            RUN_MSD_DRIVES=true
+            RUN_OVERRIDE_D=true
             FLAGS_PROVIDED=true
             shift
             ;;
@@ -468,6 +522,16 @@ while [ "$#" -gt 0 ]; do
             RUN_KEY=false
             RUN_INSTALL=false
             RUN_SUDO=false
+            RUN_QUALITY_CAP=false
+            RUN_KEEPALIVE=false
+            RUN_TAILSCALE_DIAG=false
+            RUN_TAILSCALE_CRASH_FIX=false
+            RUN_MSD_BIOS_FIX=false
+            RUN_USB_PRESET=false
+            RUN_USB_EXTRA=false
+            RUN_MSD_STORAGE=false
+            RUN_MSD_DRIVES=false
+            RUN_OVERRIDE_D=false
             FLAGS_PROVIDED=true
             shift
             ;;
@@ -503,6 +567,56 @@ while [ "$#" -gt 0 ]; do
             ;;
         --watchdog)
             RUN_WATCHDOG=true
+            FLAGS_PROVIDED=true
+            shift
+            ;;
+        --quality-cap)
+            RUN_QUALITY_CAP=true
+            FLAGS_PROVIDED=true
+            shift
+            ;;
+        --keepalive)
+            RUN_KEEPALIVE=true
+            FLAGS_PROVIDED=true
+            shift
+            ;;
+        --tailscale-diag)
+            RUN_TAILSCALE_DIAG=true
+            FLAGS_PROVIDED=true
+            shift
+            ;;
+        --tailscale-crash-fix)
+            RUN_TAILSCALE_CRASH_FIX=true
+            FLAGS_PROVIDED=true
+            shift
+            ;;
+        --msd-bios-fix)
+            RUN_MSD_BIOS_FIX=true
+            FLAGS_PROVIDED=true
+            shift
+            ;;
+        --usb-preset)
+            RUN_USB_PRESET=true
+            FLAGS_PROVIDED=true
+            shift
+            ;;
+        --usb-extra)
+            RUN_USB_EXTRA=true
+            FLAGS_PROVIDED=true
+            shift
+            ;;
+        --msd-storage)
+            RUN_MSD_STORAGE=true
+            FLAGS_PROVIDED=true
+            shift
+            ;;
+        --msd-drives)
+            RUN_MSD_DRIVES=true
+            FLAGS_PROVIDED=true
+            shift
+            ;;
+        --override-d)
+            RUN_OVERRIDE_D=true
             FLAGS_PROVIDED=true
             shift
             ;;
@@ -594,6 +708,7 @@ MTU_BACKUP_FILE=""
 EDID_BACKUP_FILE=""
 SSL_BACKUP_FILE=""
 WATCHDOG_BACKUP_FILE=""
+KEEPALIVE_BACKUP_FILE=""
 KEY_TARGET_FILE=""
 KEY_INSTALLED_LINE=""
 SUDOERS_FILE=""
@@ -610,61 +725,81 @@ SSL_CHANGED=false
 KEY_CHANGED=false
 INSTALL_CHANGED=false
 SUDOERS_CHANGED=false
+QUALITY_CAP_CHANGED=false
+KEEPALIVE_CHANGED=false
+MSD_BIOS_FIX_CHANGED=false
+USB_PRESET_CHANGED=false
+USB_EXTRA_CHANGED=false
+MSD_STORAGE_CHANGED=false
+MSD_DRIVES_CHANGED=false
+OVERRIDE_D_CHANGED=false
 
 # ------------------------------------------------------------------------------
 # Remote UI helpers
 # ------------------------------------------------------------------------------
 
-box_top() {
-    printf "%b\n" "${C}${BOLD}+------------------------------------------------------------------------------+${RESET}"
-}
+# Box-drawing characters ─ ASCII fallback on dumb terminals
+if [ "${TERM:-dumb}" != "dumb" ]; then
+    TL="╔" TR="╗" BL="╚" BR="╝" H="═" V="║" SL="╠" SR="╣"
+else
+    TL="+" TR="+" BL="+" BR="+" H="-" V="|" SL="+" SR="+"
+fi
 
-box_bottom() {
-    printf "%b\n" "${C}${BOLD}+------------------------------------------------------------------------------+${RESET}"
-}
+BOX_W=76  # inner content width (80 total: 2 padding + 76 content + 2 padding)
+
+__top_border=$(printf "%s%*s%s" "$TL" "$BOX_W" "" "$TR" | tr ' ' "$H")
+__bot_border=$(printf "%s%*s%s" "$BL" "$BOX_W" "" "$BR" | tr ' ' "$H")
+__sep_border=$(printf "%s%*s%s" "$SL" "$BOX_W" "" "$SR" | tr ' ' "$H")
+
+box_top()    { printf "%b%s%b\n" "${C}${BOLD}" "$__top_border" "$RESET"; }
+box_bottom() { printf "%b%s%b\n" "${C}${BOLD}" "$__bot_border" "$RESET"; }
+box_sep()    { printf "%b%s%b\n" "${C}${BOLD}" "$__sep_border" "$RESET"; }
 
 box_line() {
     local text="${1:-}"
-    printf "%b|%b %-76s %b|%b\n" "${C}${BOLD}" "$RESET" "$text" "${C}${BOLD}" "$RESET"
-}
-
-box_line_color() {
-    local color="$1"
-    local text="$2"
-    printf "%b|%b %b%-76s%b %b|%b\n" "${C}${BOLD}" "$RESET" "$color" "$text" "$RESET" "${C}${BOLD}" "$RESET"
+    local plain pad
+    plain=$(printf "%s" "$text" | sed 's/\x1b\[[0-9;]*m//g')
+    pad=$((BOX_W - ${#plain}))
+    if [ "$pad" -lt 0 ]; then
+        local visible
+        visible=$(printf "%s" "$text" | sed 's/\x1b\[[0-9;]*m//g' | head -c "$BOX_W")
+        printf "%b%s %s %s%b\n" "${C}${BOLD}" "$V" "$visible" "$V" "$RESET"
+    else
+        printf "%b%s %s%*s %s%b\n" "${C}${BOLD}" "$V" "$text" "$pad" "" "$V" "$RESET"
+    fi
 }
 
 draw() {
     local title="$1"
     printf "%b" "$CLEAR"
+    printf "%b" "$HIDE_CURSOR"
     box_top
-    printf "%b|%b %b%-76s%b %b|%b\n" "${C}${BOLD}" "$RESET" "${W}${BOLD}" "$title" "$RESET" "${C}${BOLD}" "$RESET"
-    box_top
-    box_line ""
+    box_line "${W}${BOLD}${title}${RESET}"
+    box_sep
 }
 
 close_box() {
-    box_line ""
     box_bottom
+    printf "%b" "$SHOW_CURSOR"
 }
 
 info() {
-    box_line "[INFO] $1"
+    box_line "${DIM}[INFO]${RESET} $1"
     log_msg "INFO" "$1"
 }
 
 ok() {
-    box_line_color "$G" "[OK] $1"
+    box_line "${G}[OK]${RESET} $1"
     log_msg "OK" "$1"
 }
 
 warn() {
-    box_line_color "$Y" "[WARN] $1"
+    box_line "${Y}[WARN]${RESET} $1"
     log_msg "WARN" "$1"
 }
 
 err() {
-    box_line_color "$R" "[ERR] $1"
+    box_line "${R}[ERR]${RESET} $1"
     log_msg "ERR" "$1"
 }
 
@@ -787,6 +922,68 @@ rollback_changes() {
             rm -f /etc/kvmd/tc358743-edid.hex
             warn "Removed EDID file installed by this run."
         fi
+    fi
+
+    if [ "$KEEPALIVE_CHANGED" = true ]; then
+        if [ -n "$KEEPALIVE_BACKUP_FILE" ] && [ -f "$KEEPALIVE_BACKUP_FILE" ]; then
+            cp "$KEEPALIVE_BACKUP_FILE" /etc/sysctl.d/99-pikvm-tcp-keepalive.conf || true
+            warn "Restored TCP keepalive config from backup."
+        else
+            rm -f /etc/sysctl.d/99-pikvm-tcp-keepalive.conf
+            warn "Removed TCP keepalive config installed by this run."
+        fi
+    fi
+
+    if [ "$QUALITY_CAP_CHANGED" = true ]; then
+        local qc_server_py
+        qc_server_py="$(find /usr/lib -path '*/kvmd/apps/vnc/server.py' -print -quit 2>/dev/null || true)"
+        if [ -n "$qc_server_py" ]; then
+            local qc_backup
+            qc_backup="$(ls -t "${qc_server_py}.bak."* 2>/dev/null | head -n 1 || true)"
+            if [ -n "$qc_backup" ]; then
+                cp "$qc_backup" "$qc_server_py" || true
+                warn "Restored VNC server.py from backup."
+            fi
+        fi
+    fi
+
+    if [ "$MSD_BIOS_FIX_CHANGED" = true ]; then
+        delete_yaml_paths otg.devices.msd.start || true
+        warn "Removed MSD BIOS config key from this run."
+    fi
+
+    if [ "$USB_PRESET_CHANGED" = true ]; then
+        delete_yaml_paths otg.devices.keyboard otg.devices.mouse otg.devices.msd otg.devices.hid || true
+        warn "Reset USB device preset from this run."
+    fi
+
+    if [ "$USB_EXTRA_CHANGED" = true ]; then
+        delete_yaml_paths otg.devices.ethernet otg.devices.serial otg.devices.audio || true
+        warn "Removed USB extras config keys from this run."
+    fi
+
+    if [ "$MSD_STORAGE_CHANGED" = true ]; then
+        local msd_mount=""
+        if [ -f /etc/fstab ]; then
+            msd_mount="$(grep -E 'nfs|cifs' /etc/fstab 2>/dev/null | awk '{print $2}' | head -1 || true)"
+        fi
+        if [ -n "$msd_mount" ] && mountpoint -q "$msd_mount" 2>/dev/null; then
+            umount "$msd_mount" 2>/dev/null || true
+        fi
+        if [ -f /etc/fstab ]; then
+            grep -v -E 'nfs|cifs' /etc/fstab > /etc/fstab.tmp 2>/dev/null && mv /etc/fstab.tmp /etc/fstab
+        fi
+        warn "Reverted network storage changes from this run."
+    fi
+
+    if [ "$MSD_DRIVES_CHANGED" = true ]; then
+        delete_yaml_paths otg.devices.msd_data || true
+        warn "Removed additional MSD drives config from this run."
+    fi
+
+    if [ "$OVERRIDE_D_CHANGED" = true ]; then
+        rm -rf /etc/kvmd/override.d 2>/dev/null || true
+        warn "Removed override.d directory from this run."
     fi
 
     if [ "$SSL_CHANGED" = true ]; then
@@ -1060,13 +1257,12 @@ print_patch_for_manual_merge() {
     box_line ""
     box_line "Manual YAML patch to merge into:"
     box_line "  $CONFIG_FILE"
-    box_line "----------------------------------------------------------------------"
+    box_line ""
 
     while IFS= read -r line; do
         box_line "  ${line:0:72}"
     done < "$patch_file"
 
-    box_line "----------------------------------------------------------------------"
     box_line ""
     box_line "After manual merge, run:"
     box_line "  kvmd -M --config=$CONFIG_FILE"
@@ -1316,6 +1512,15 @@ apply_recommended_preset() {
     RUN_KEY=false
     RUN_INSTALL=false
     RUN_SUDO=false
+    RUN_QUALITY_CAP=false
+    RUN_KEEPALIVE=false
+    RUN_TAILSCALE_DIAG=false
+    RUN_MSD_BIOS_FIX=true
+    RUN_USB_PRESET=false
+    RUN_USB_EXTRA=false
+    RUN_MSD_STORAGE=false
+    RUN_MSD_DRIVES=false
+    RUN_OVERRIDE_D=false
 }
 
 apply_all_preset() {
@@ -1328,6 +1533,16 @@ apply_all_preset() {
     RUN_KEY=true
     RUN_INSTALL=true
     RUN_SUDO=false
+    RUN_QUALITY_CAP=true
+    RUN_KEEPALIVE=true
+    RUN_TAILSCALE_DIAG=true
+    RUN_TAILSCALE_CRASH_FIX=true
+    RUN_MSD_BIOS_FIX=true
+    RUN_USB_PRESET=true
+    RUN_USB_EXTRA=true
+    RUN_MSD_STORAGE=true
+    RUN_MSD_DRIVES=true
+    RUN_OVERRIDE_D=true
 }
 
 apply_none_preset() {
@@ -1340,6 +1555,16 @@ apply_none_preset() {
     RUN_KEY=false
     RUN_INSTALL=false
     RUN_SUDO=false
+    RUN_QUALITY_CAP=false
+    RUN_KEEPALIVE=false
+    RUN_TAILSCALE_DIAG=false
+    RUN_TAILSCALE_CRASH_FIX=false
+    RUN_MSD_BIOS_FIX=false
+    RUN_USB_PRESET=false
+    RUN_USB_EXTRA=false
+    RUN_MSD_STORAGE=false
+    RUN_MSD_DRIVES=false
+    RUN_OVERRIDE_D=false
 }
 
 interactive_module_menu() {
@@ -1359,7 +1584,17 @@ interactive_module_menu() {
         box_line "[6] [$(yn_marker "$RUN_WATCHDOG")] Tailscale watchdog"
         box_line "[7] [$(yn_marker "$RUN_KEY")] Install SSH public key"
         box_line "[8] [$(yn_marker "$RUN_INSTALL")] Install optimizer permanently"
-        # box_line "[9] [$(yn_marker "$RUN_SUDO")] Restricted NOPASSWD sudo for installed optimizer" (DISABLED)
+        box_line "[9] [$(yn_marker "$RUN_QUALITY_CAP")] VNC JPEG quality cap (Screens fix)"
+        box_line "[0] [$(yn_marker "$RUN_KEEPALIVE")] TCP keepalive tuning (Tailscale)"
+        box_line ""
+        box_line "[t] [$(yn_marker "$RUN_TAILSCALE_DIAG")] Tailscale networking diagnosis (read-only)"
+        box_line "[c] [$(yn_marker "$RUN_TAILSCALE_CRASH_FIX")] Tailscale crash fix (32-bit ARM mitigations)"
+        box_line "[m] [$(yn_marker "$RUN_MSD_BIOS_FIX")] MSD BIOS compatibility (UEFI boot-loop fix)"
+        box_line "[p] [$(yn_marker "$RUN_USB_PRESET")] USB device preset (Normal/BIOS mode)"
+        box_line "[e] [$(yn_marker "$RUN_USB_EXTRA")] USB extras (Ethernet/Serial/Audio)"
+        box_line "[s] [$(yn_marker "$RUN_MSD_STORAGE")] Network storage mount for MSD ISOs"
+        box_line "[d] [$(yn_marker "$RUN_MSD_DRIVES")] Additional MSD virtual drives"
+        box_line "[o] [$(yn_marker "$RUN_OVERRIDE_D")] override.d YAML fragment support"
         box_line ""
         close_box
 
@@ -1383,12 +1618,16 @@ interactive_module_menu() {
             6) toggle_bool RUN_WATCHDOG ;;
             7) toggle_bool RUN_KEY ;;
             8) toggle_bool RUN_INSTALL ;;
-            # 9)
-            #     toggle_bool RUN_SUDO
-            #     if [ "$RUN_SUDO" = true ]; then
-            #         RUN_INSTALL=true
-            #     fi
-            #     ;;
+            9) toggle_bool RUN_QUALITY_CAP ;;
+            0) toggle_bool RUN_KEEPALIVE ;;
+            t|T) toggle_bool RUN_TAILSCALE_DIAG ;;
+            c|C) toggle_bool RUN_TAILSCALE_CRASH_FIX ;;
+            m|M) toggle_bool RUN_MSD_BIOS_FIX ;;
+            p|P) toggle_bool RUN_USB_PRESET ;;
+            e|E) toggle_bool RUN_USB_EXTRA ;;
+            s|S) toggle_bool RUN_MSD_STORAGE ;;
+            d|D) toggle_bool RUN_MSD_DRIVES ;;
+            o|O) toggle_bool RUN_OVERRIDE_D ;;
             a|A) apply_all_preset ;;
             n|N) apply_none_preset ;;
             r|R) apply_recommended_preset ;;
@@ -1421,7 +1660,7 @@ interactive_uninstall_menu() {
     while true; do
         draw "UNINSTALL / CLEANUP"
         box_line "These remove optimizer-created or optimizer-managed changes."
-        box_line "Type numbers to toggle. Press Enter with no input to continue."
+        box_line "Type numbers/letters to toggle. Press Enter with no input to continue."
         box_line "Presets: a = all cleanup, n = none, q = back"
         box_line ""
         box_line "[1] [$(yn_marker "$UN_CORE")] Remove optimizer core config keys"
@@ -1432,7 +1671,16 @@ interactive_uninstall_menu() {
         box_line "[6] [$(yn_marker "$UN_WATCHDOG")] Remove Tailscale watchdog"
         box_line "[7] [$(yn_marker "$UN_KEY")] Remove SSH public key from authorized_keys"
         box_line "[8] [$(yn_marker "$UN_INSTALL")] Remove permanent optimizer install"
-        # box_line "[9] [$(yn_marker "$UN_SUDO")] Remove restricted sudoers rule" (DISABLED)
+        box_line "[9] [$(yn_marker "$UN_QUALITY_CAP")] Restore VNC server.py from backup"
+        box_line "[0] [$(yn_marker "$UN_KEEPALIVE")] Remove TCP keepalive sysctl config"
+        box_line ""
+        box_line "[c] [$(yn_marker "$UN_TAILSCALE_CRASH_FIX")] Remove Tailscale crash fix (IPv6 sysctl + watchdog config)"
+        box_line "[m] [$(yn_marker "$UN_MSD_BIOS_FIX")] Remove MSD BIOS config key"
+        box_line "[p] [$(yn_marker "$UN_USB_PRESET")] Reset USB device preset to defaults"
+        box_line "[e] [$(yn_marker "$UN_USB_EXTRA")] Remove USB extras config keys"
+        box_line "[s] [$(yn_marker "$UN_MSD_STORAGE")] Unmount and remove network storage config"
+        box_line "[d] [$(yn_marker "$UN_MSD_DRIVES")] Reset MSD drives to single drive"
+        box_line "[o] [$(yn_marker "$UN_OVERRIDE_D")] Remove override.d directory"
         box_line ""
         close_box
 
@@ -1451,7 +1699,15 @@ interactive_uninstall_menu() {
             6) toggle_bool UN_WATCHDOG ;;
             7) toggle_bool UN_KEY ;;
             8) toggle_bool UN_INSTALL ;;
-            # 9) toggle_bool UN_SUDO ;;
+            9) toggle_bool UN_QUALITY_CAP ;;
+            0) toggle_bool UN_KEEPALIVE ;;
+            c|C) toggle_bool UN_TAILSCALE_CRASH_FIX ;;
+            m|M) toggle_bool UN_MSD_BIOS_FIX ;;
+            p|P) toggle_bool UN_USB_PRESET ;;
+            e|E) toggle_bool UN_USB_EXTRA ;;
+            s|S) toggle_bool UN_MSD_STORAGE ;;
+            d|D) toggle_bool UN_MSD_DRIVES ;;
+            o|O) toggle_bool UN_OVERRIDE_D ;;
             a|A)
                 UN_CORE=true
                 UN_MTU=true
@@ -1462,6 +1718,15 @@ interactive_uninstall_menu() {
                 UN_KEY=true
                 UN_INSTALL=true
                 UN_SUDO=true
+                UN_QUALITY_CAP=true
+                UN_KEEPALIVE=true
+                UN_MSD_BIOS_FIX=true
+                UN_TAILSCALE_CRASH_FIX=true
+                UN_USB_PRESET=true
+                UN_USB_EXTRA=true
+                UN_MSD_STORAGE=true
+                UN_MSD_DRIVES=true
+                UN_OVERRIDE_D=true
                 ;;
             n|N)
                 UN_CORE=false
@@ -1473,6 +1738,15 @@ interactive_uninstall_menu() {
                 UN_KEY=false
                 UN_INSTALL=false
                 UN_SUDO=false
+                UN_QUALITY_CAP=false
+                UN_KEEPALIVE=false
+                UN_MSD_BIOS_FIX=false
+                UN_TAILSCALE_CRASH_FIX=false
+                UN_USB_PRESET=false
+                UN_USB_EXTRA=false
+                UN_MSD_STORAGE=false
+                UN_MSD_DRIVES=false
+                UN_OVERRIDE_D=false
                 ;;
             q|Q)
                 MODE="optimize"
@@ -1499,13 +1773,20 @@ apply_core_config() {
     cat > "$patch" <<'EOF'
 kvmd:
     streamer:
-        gop: 0
-        quality: 35
-        h264_bitrate: 1500
-        h264_boost: true
-    vnc:
-        mac_command_as_meta: true
-        relative_scroll: true
+        quality: 15
+        h264_bitrate:
+            default: 1500
+            min: 25
+            max: 20000
+        h264_gop:
+            default: 0
+            min: 0
+            max: 60
+
+vnc:
+    auth:
+        vncauth:
+            enabled: true
 EOF
 
     merge_yaml_patch "$patch"
@@ -1568,8 +1849,12 @@ apply_edid() {
         warn "EDID source required for non-interactive mode; skipped EDID."
         return 0
     else
-        printf "\nEnter EDID hex file URL (https://...) or local path on PiKVM.\n"
-        printf "Leave blank to skip EDID setup.\n"
+        printf "\nEDID source options:\n"
+        printf "  URL (https://...)              - Download EDID from URL\n"
+        printf "  Local file path                - Use EDID file on PiKVM\n"
+        printf "  'dell' or 'd2721h'             - Use built-in DELL D2721H reference EDID\n"
+        printf "  'current'                      - Persist existing EDID (if any)\n"
+        printf "  Leave blank                    - Skip EDID setup\n"
         printf "EDID source: "
         read -r edid_source
     fi
@@ -1599,7 +1884,61 @@ EOF
         ok "Backed up existing EDID to $EDID_BACKUP_FILE"
     fi
 
-    if [[ "$edid_source" =~ ^https?:// ]]; then
+    local edid_source_lower
+    edid_source_lower="$(printf "%s" "$edid_source" | tr '[:upper:]' '[:lower:]')"
+
+    # Built-in DELL D2721H reference EDID (no 1080p24 VIC 32 — macOS-friendly)
+    if [ "$edid_source_lower" = "dell" ] || [ "$edid_source_lower" = "d2721h" ]; then
+        info "Using built-in DELL D2721H reference EDID."
+        cat > "$edid_dest" <<'DELL_EDID_HEX'
+00FFFFFFFFFFFF0010AC132045393639
+201E0103803C22782ACD25A3574B9F27
+0D5054A54B00714F8180A9C0D1C00101
+0101010101010101023A801871382D4058
+2C450056502100001E000000FF00333553
+35475132330A2020202020000000FC0044
+454C4C204432373231480A2000000000FD
+00384C1E5311000A202020202020200181
+02031AB14F9005040302071601061112
+1513141F65030C001000023A80187138
+2D40582C450056502100001E011D8018
+711C1620582C250056502100009E011D
+007251D01E206E28550056502100001E
+8C0AD08A20E02D10103E960056502100
+0018000000000000000000000000000000
+000000000000000000000000000000004F
+DELL_EDID_HEX
+        EDID_CHANGED=true
+
+    elif [ "$edid_source_lower" = "current" ]; then
+        if [ -f "$edid_dest" ]; then
+            info "Persisting existing EDID at $edid_dest."
+            # File already in place, just need the YAML patch
+            EDID_CHANGED=true
+        else
+            info "No existing EDID found; enabling built-in PiKVM reference."
+            cat > "$edid_dest" <<'PIKVM_EDID_HEX'
+00FFFFFFFFFFFF005262888800888888
+001C0103800000780AEE91A3544C9926
+0F5054A54B00714F8180D1C001010101
+010101010101011D007251D01E206E28
+5500C48E2100001E8C0AD08A20E02D10
+103E9600C48E21000018000000FD0038
+4B1F5311000A202020202020000000FC
+0050692D4B564D0A202020202020015D
+020301F14F900F1F3F14200513040302
+011D80D0721C1620102C2580C48E2100
+009E011D80D0721C1620102C2580C48E
+2100009E011D00BC52D01E20B8285540
+C48E2100001E8C0AD08A20E02D10103E
+9600C48E21000018000000FD00384B1F
+5311000A202020202020000000FC0050
+692D4B564D0A2020202020200152
+PIKVM_EDID_HEX
+            EDID_CHANGED=true
+        fi
+
+    elif [[ "$edid_source" =~ ^https?:// ]]; then
         if [[ "$edid_source" =~ ^http:// ]]; then
             warn "HTTP not allowed for EDID downloads; use HTTPS."
             return 0
@@ -1645,6 +1984,85 @@ EOF
 
     merge_yaml_patch "$patch"
     ok "EDID file installed at $edid_dest."
+}
+
+apply_vnc_quality_cap() {
+    info "Applying VNC JPEG quality cap (max 15)..."
+
+    local server_py
+    server_py="$(find /usr/lib -path '*/kvmd/apps/vnc/server.py' -print -quit 2>/dev/null || true)"
+
+    if [ -z "$server_py" ]; then
+        warn "kvmd-vnc server.py not found; quality cap skipped."
+        return 0
+    fi
+
+    local backup_file="${server_py}.bak.$(date +%Y%m%d-%H%M%S)"
+
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would back up $server_py and cap JPEG quality at 15."
+        return 0
+    fi
+
+    make_rw
+
+    cp "$server_py" "$backup_file"
+    ok "Backed up $server_py to $backup_file"
+
+    # Cap JPEG quality at 15 instead of 100 to prevent Screens client from overwhelming the stream
+    if grep -q "tight_jpeg_quality, 15)" "$server_py" 2>/dev/null; then
+        ok "Quality cap already applied (tight_jpeg_quality capped at 15)."
+        QUALITY_CAP_CHANGED=false
+    else
+        if sed -i 's/tight_jpeg_quality, [0-9]\+)/tight_jpeg_quality, 15)/' "$server_py" 2>/dev/null; then
+            ok "JPEG quality capped at 15 in $server_py"
+            QUALITY_CAP_CHANGED=true
+        else
+            warn "Failed to patch $server_py; restoring backup."
+            cp "$backup_file" "$server_py" || true
+            return 0
+        fi
+    fi
+
+    restart_service_if_exists kvmd-vnc.service
+}
+
+apply_tcp_keepalive() {
+    info "Configuring TCP keepalive for Tailscale stability..."
+
+    local sysctl_file="/etc/sysctl.d/99-pikvm-tcp-keepalive.conf"
+
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would write $sysctl_file with aggressive keepalive settings."
+        ok "DRY RUN: would run sysctl -p $sysctl_file."
+        return 0
+    fi
+
+    make_rw
+    mkdir -p /etc/sysctl.d
+
+    if [ -f "$sysctl_file" ]; then
+        KEEPALIVE_BACKUP_FILE="${sysctl_file}.bak.$(date +%Y%m%d-%H%M%S)"
+        cp "$sysctl_file" "$KEEPALIVE_BACKUP_FILE"
+        ok "Backed up existing keepalive config to $KEEPALIVE_BACKUP_FILE"
+    fi
+
+    cat > "$sysctl_file" <<'EOF'
+# PiKVM Optimizer — Aggressive TCP keepalive for Tailscale stability
+# Tailscale uses userspace networking (netstack) which terminates TCP locally.
+# Short keepalive intervals prevent premature connection drops (~30s timeout).
+net.ipv4.tcp_keepalive_time = 10
+net.ipv4.tcp_keepalive_intvl = 5
+net.ipv4.tcp_keepalive_probes = 3
+EOF
+
+    if sysctl -p "$sysctl_file" >/dev/null 2>&1; then
+        ok "TCP keepalive settings applied (time=10s, intvl=5s, probes=3)."
+        KEEPALIVE_CHANGED=true
+    else
+        warn "Could not apply sysctl settings (may need reboot)."
+        KEEPALIVE_CHANGED=true
+    fi
 }
 
 apply_tailscale_ssl() {
@@ -1999,18 +2417,613 @@ EOF
 }
 
 # ------------------------------------------------------------------------------
+# New modules (v1.3.0)
+# ------------------------------------------------------------------------------
+
+apply_tailscale_diag() {
+    info "Running Tailscale networking diagnosis..."
+
+    if ! command -v tailscale >/dev/null 2>&1; then
+        warn "Tailscale not installed; skipping diagnosis."
+        return 0
+    fi
+
+    local ts_ver
+    ts_ver="$(tailscale version 2>/dev/null || echo "unknown")"
+    ok "Tailscale version: $ts_ver"
+
+    if tailscale status >/dev/null 2>&1; then
+        ok "Tailscale is running and authenticated."
+    else
+        warn "Tailscale is not running or not authenticated."
+        return 0
+    fi
+
+    local mode_info
+    mode_info="$(journalctl -u tailscaled --no-pager -n 20 2>/dev/null | grep -oP 'New\w+Engine\([^)]+\)' | tail -1 || echo "unknown")"
+    box_line "Networking engine: ${mode_info:-unknown}"
+
+    if [ -e /dev/net/tun ]; then
+        ok "TUN device exists (/dev/net/tun)."
+    else
+        warn "TUN device not found."
+    fi
+
+    if lsmod 2>/dev/null | grep -q "^tun"; then
+        ok "TUN kernel module loaded."
+    else
+        info "TUN kernel module not loaded."
+    fi
+
+    if lsmod 2>/dev/null | grep -q "^wireguard"; then
+        ok "WireGuard kernel module loaded."
+    else
+        info "WireGuard kernel module not loaded (expected on 32-bit ARM)."
+    fi
+
+    local iface_info
+    iface_info="$(ip addr show tailscale0 2>/dev/null || echo "not found")"
+    if echo "$iface_info" | grep -q "inet 100\."; then
+        local ts_ip
+        ts_ip="$(echo "$iface_info" | grep -oP 'inet \K[0-9.]+')"
+        ok "tailscale0 interface active with IP: $ts_ip"
+    else
+        warn "tailscale0 has no Tailscale IP assigned."
+    fi
+
+    local carrier_loss
+    carrier_loss="$(journalctl --no-pager 2>/dev/null | grep -c "tailscale0: Lost carrier" 2>/dev/null || echo "0")"
+    if [ "$carrier_loss" -gt 0 ] 2>/dev/null; then
+        warn "tailscale0 carrier losses detected in logs: $carrier_loss occurrences."
+        local recent
+        recent="$(journalctl --no-pager 2>/dev/null | grep "tailscale0: Lost carrier" | tail -5 | sed 's/^.*\(...[0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}\).*/\1/' | tr '\n' ' ')"
+        box_line "Recent carrier loss times: ${recent:-unknown}"
+        box_line "Note: carrier loss is normal for userspace WireGuard on 32-bit ARM."
+        box_line "Kernel WireGuard not available on this platform; no TUN mode fix possible."
+    else
+        ok "No tailscale0 carrier losses detected."
+    fi
+
+    local ts_status
+    ts_status="$(tailscale status --json 2>/dev/null || true)"
+    if echo "$ts_status" | grep -q '"Online":true'; then
+        ok "PiKVM is online on Tailscale."
+    else
+        warn "PiKVM may be offline on Tailscale."
+    fi
+
+    if echo "$ts_status" | grep -q '"Relay"'; then
+        local relay
+        relay="$(echo "$ts_status" | grep -oP '"Relay":\s*"\K[^"]+')"
+        info "Connection via relay: ${relay:-unknown}"
+        box_line "Recommendation: If experiencing timeouts, try enabling DERP region pinning"
+        box_line "or check if direct connections are available between peers."
+    fi
+
+    ok "Tailscale diagnosis complete."
+}
+
+# ------------------------------------------------------------------------------
+# Tailscale crash fix (32-bit ARM mitigation)
+# ------------------------------------------------------------------------------
+
+detect_arch() {
+    local arch
+    arch="$(uname -m 2>/dev/null || true)"
+    case "$arch" in
+        aarch64|arm64) echo "64" ;;
+        armv7l|armv7|arm) echo "32" ;;
+        x86_64|amd64) echo "64" ;;
+        *) echo "unknown" ;;
+    esac
+}
+
+apply_tailscale_crash_fix() {
+    info "Checking Tailscale crash fix requirements..."
+
+    if ! command -v tailscale >/dev/null 2>&1; then
+        warn "Tailscale not installed; skipped crash fix."
+        return 0
+    fi
+
+    local arch
+    arch="$(detect_arch)"
+    if [ "$arch" = "64" ]; then
+        info "64-bit architecture detected ($(uname -m)). Tailscale crash bug affects 32-bit ARM only."
+        ok "No crash fix needed on this platform."
+        return 0
+    fi
+
+    if [ "$arch" = "unknown" ]; then
+        warn "Unknown architecture ($(uname -m)); skipping crash fix (only needed on 32-bit ARM)."
+        return 0
+    fi
+
+    info "32-bit ARM detected. Tailscale/gVisor has a known 64-bit atomic alignment crash on this platform."
+    ok "Applying mitigations for Tailscale crash cycle..."
+
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would disable IPv6 on tailscale0 (sysctl + persistent config)."
+        ok "DRY RUN: would set systemd watchdog to 15s with 1s restart delay."
+        ok "DRY RUN: would reload systemd daemon and restart tailscaled."
+        return 0
+    fi
+
+    make_rw
+
+    # --- IPv6 sysctl ---
+    local sysctl_file="/etc/sysctl.d/60-tailscale0-ipv6.conf"
+    if [ -f "$sysctl_file" ]; then
+        CRASH_FIX_SYSCTL_BACKUP="${sysctl_file}.bak.$(date +%Y%m%d-%H%M%S)"
+        cp "$sysctl_file" "$CRASH_FIX_SYSCTL_BACKUP"
+        ok "Backed up existing sysctl config to $CRASH_FIX_SYSCTL_BACKUP"
+    fi
+    cat > "$sysctl_file" <<'EOF'
+# Disable IPv6 on tailscale0 to avoid gVisor netstack code paths
+# that trigger 64-bit atomic alignment crashes on 32-bit ARM.
+net.ipv6.conf.tailscale0.disable_ipv6 = 1
+EOF
+    ok "Wrote $sysctl_file"
+
+    # Apply immediately if interface exists
+    if ip link show tailscale0 >/dev/null 2>&1; then
+        sysctl -w net.ipv6.conf.tailscale0.disable_ipv6=1 >/dev/null 2>&1 || true
+        ok "Applied sysctl to tailscale0 immediately."
+    else
+        info "tailscale0 not present yet; sysctl will apply when interface is created."
+    fi
+
+    # --- Systemd watchdog override ---
+    local override_dir="/etc/systemd/system/tailscaled.service.d"
+    local override_file="$override_dir/override.conf"
+    mkdir -p "$override_dir"
+
+    if [ -f "$override_file" ]; then
+        CRASH_FIX_OVERRIDE_BACKUP="${override_file}.bak.$(date +%Y%m%d-%H%M%S)"
+        cp "$override_file" "$CRASH_FIX_OVERRIDE_BACKUP"
+        ok "Backed up existing override.conf to $CRASH_FIX_OVERRIDE_BACKUP"
+    fi
+    cat > "$override_file" <<'EOF'
+[Service]
+# Fast crash detection: 15s watchdog + 1s restart = ~23s total cycle
+# The gVisor alignment bug on 32-bit ARM causes tailscaled to hang every ~30s.
+# This reduces downtime from ~38s (with 30s watchdog) to ~23s.
+WatchdogSec=15s
+Restart=always
+RestartSec=1s
+EOF
+    ok "Wrote $override_file (WatchdogSec=15s, RestartSec=1s)"
+
+    systemctl daemon-reload 2>/dev/null || true
+
+    if systemctl is-active tailscaled.service >/dev/null 2>&1; then
+        systemctl restart tailscaled.service 2>/dev/null || true
+        ok "Restarted tailscaled.service with new watchdog config."
+    else
+        info "tailscaled.service not active; will apply watchdog config on next start."
+    fi
+
+    ok "Tailscale crash fix applied."
+    warn "This is a mitigation, not a fix. The gVisor alignment bug is unfixable on 32-bit ARM."
+    warn "Long-term: migrate to a 64-bit OS (aarch64) to eliminate this issue entirely."
+}
+
+uninstall_tailscale_crash_fix() {
+    info "Removing Tailscale crash fix..."
+
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would remove /etc/sysctl.d/60-tailscale0-ipv6.conf."
+        ok "DRY RUN: would remove /etc/systemd/system/tailscaled.service.d/override.conf (and restore backup)."
+        return 0
+    fi
+
+    make_rw
+
+    local sysctl_file="/etc/sysctl.d/60-tailscale0-ipv6.conf"
+    if [ -f "$sysctl_file" ]; then
+        rm -f "$sysctl_file"
+        ok "Removed $sysctl_file"
+        # Re-enable IPv6 on tailscale0 if interface exists (side effect of removal)
+        if ip link show tailscale0 >/dev/null 2>&1; then
+            sysctl -w net.ipv6.conf.tailscale0.disable_ipv6=0 >/dev/null 2>&1 || true
+        fi
+    else
+        info "Sysctl config not found; nothing to remove."
+    fi
+
+    local override_file="/etc/systemd/system/tailscaled.service.d/override.conf"
+    if [ -f "$override_file" ]; then
+        local backup
+        backup="$(ls -t "${override_file}.bak."* 2>/dev/null | head -1 || true)"
+        if [ -n "$backup" ]; then
+            cp "$backup" "$override_file"
+            ok "Restored override.conf from backup: $backup"
+        else
+            rm -f "$override_file"
+            ok "Removed $override_file (no backup found)"
+        fi
+    else
+        info "override.conf not found; nothing to remove."
+    fi
+
+    systemctl daemon-reload 2>/dev/null || true
+    ok "Tailscale crash fix removed."
+}
+
+apply_msd_bios_fix() {
+    info "Applying MSD BIOS compatibility mode..."
+
+    if ! python_yaml_available; then
+        warn "Python YAML module required; cannot apply MSD BIOS fix."
+        return 0
+    fi
+
+    local patch="/tmp/pikvm-optimizer.msd-bios.yaml"
+
+    cat > "$patch" <<'EOF'
+otg:
+    devices:
+        msd:
+            start: false
+EOF
+
+    if [ "$DRY_RUN" = true ]; then
+        rm -f "$patch"
+        ok "DRY RUN: would set otg.devices.msd.start: false via $patch."
+        return 0
+    fi
+
+    merge_yaml_patch "$patch"
+    rm -f "$patch"
+    MSD_BIOS_FIX_CHANGED=true
+    ok "MSD BIOS compatibility applied (otg.devices.msd.start: false)."
+    box_line "This prevents UEFI boot-loop on Dell/HP systems (GitHub #1569)."
+}
+
+apply_usb_preset() {
+    info "Configuring USB device preset..."
+
+    if ! python_yaml_available; then
+        warn "Python YAML module required; cannot configure USB preset."
+        return 0
+    fi
+
+    local preset=""
+    if [ "$YES" = true ]; then
+        warn "Non-interactive mode: defaulting to BIOS-safe preset (keyboard + relative mouse)."
+        preset="bios"
+    else
+        printf "\nSelect USB preset:\n"
+        printf "  n) Normal - keyboard + absolute mouse + MSD + HID (default)\n"
+        printf "  b) BIOS   - keyboard + relative mouse only (UEFI compatibility)\n"
+        printf "Choice [n/b]: "
+        read -r preset
+        case "$preset" in
+            b|B|bios|BIOS) preset="bios" ;;
+            *) preset="normal" ;;
+        esac
+    fi
+
+    local patch="/tmp/pikvm-optimizer.usb-preset.yaml"
+
+    if [ "$preset" = "bios" ]; then
+        cat > "$patch" <<'EOF'
+otg:
+    devices:
+        keyboard:
+            type: keyboard
+            bind: 0
+        mouse:
+            type: mouse
+            bind: 0
+EOF
+    else
+        cat > "$patch" <<'EOF'
+otg:
+    devices:
+        keyboard:
+            type: keyboard
+            bind: 0
+        mouse:
+            type: mouse
+            bind: 0
+        msd:
+            type: msd
+            bind: 0
+        hid:
+            type: hid
+            bind: 0
+EOF
+    fi
+
+    if [ "$DRY_RUN" = true ]; then
+        rm -f "$patch"
+        ok "DRY RUN: would apply USB preset: $preset"
+        return 0
+    fi
+
+    merge_yaml_patch "$patch"
+    rm -f "$patch"
+    USB_PRESET_CHANGED=true
+    ok "USB preset applied: $preset"
+}
+
+apply_usb_extra() {
+    info "Configuring USB extras..."
+
+    if ! python_yaml_available; then
+        warn "Python YAML module required; cannot configure USB extras."
+        return 0
+    fi
+
+    local do_eth=false
+    local do_serial=false
+    local do_audio=false
+
+    if [ "$YES" = true ]; then
+        warn "Non-interactive mode: enabling all USB extras."
+        do_eth=true
+        do_serial=true
+        do_audio=true
+    else
+        printf "\nEnable USB extras (select all that apply):\n"
+        printf "  e) USB Ethernet (RNDIS/ECM) - network-over-USB\n"
+        printf "  s) USB Serial (ACM) - serial console access\n"
+        printf "  a) USB Audio (UAC2) - audio over USB\n"
+        printf "  x) All of the above\n"
+        printf "  (blank to skip)\n"
+        printf "Selection [e/s/a/x]: "
+        read -r extras_choice
+        case "$extras_choice" in
+            e|E|eth|Ethernet) do_eth=true ;;
+            s|S|serial|Serial) do_serial=true ;;
+            a|A|audio|Audio) do_audio=true ;;
+            x|X|all|All) do_eth=true; do_serial=true; do_audio=true ;;
+            *) warn "No USB extras selected."; return 0 ;;
+        esac
+    fi
+
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would enable USB extras (eth=$do_eth serial=$do_serial audio=$do_audio)."
+        return 0
+    fi
+
+    if [ "$do_eth" = true ] || [ "$do_serial" = true ] || [ "$do_audio" = true ]; then
+        local patch="/tmp/pikvm-optimizer.usb-extra.yaml"
+        {
+            echo "otg:"
+            echo "  devices:"
+            [ "$do_eth" = true ] && echo "    ethernet:" && echo "      type: ethernet" && echo "      bind: 0"
+            [ "$do_serial" = true ] && echo "    serial:" && echo "      type: serial" && echo "      bind: 0"
+            [ "$do_audio" = true ] && echo "    audio:" && echo "      type: audio" && echo "      bind: 0"
+        } > "$patch"
+
+        if [ "$DRY_RUN" = true ]; then
+            rm -f "$patch"
+            ok "DRY RUN: would enable USB extras."
+            return 0
+        fi
+
+        merge_yaml_patch "$patch"
+        rm -f "$patch"
+        USB_EXTRA_CHANGED=true
+        ok "USB extras configuration applied."
+    fi
+}
+
+apply_msd_storage() {
+    info "Configuring network storage for MSD ISOs..."
+
+    if [ "$YES" = true ]; then
+        warn "Network storage setup requires interactive input; skipped in --yes mode."
+        return 0
+    fi
+
+    printf "\nNetwork storage for MSD ISO images\n"
+    printf "This mounts a network share so ISOs can be stored remotely.\n\n"
+    printf "Protocol (nfs/smb) [nfs]: "
+    read -r proto
+    proto="${proto:-nfs}"
+
+    case "$proto" in
+        nfs|NFS)
+            proto="nfs"
+            printf "NFS server (e.g., 192.168.1.100): "
+            read -r server
+            [ -z "$server" ] && { warn "Server required; skipping."; return 0; }
+            printf "NFS export path (e.g., /volume1/iso): "
+            read -r export_path
+            [ -z "$export_path" ] && { warn "Export path required; skipping."; return 0; }
+            local mount_opts="soft,noatime,nofail"
+            local fstab_line="$server:$export_path"
+            local pkg="nfs-utils"
+            local svc_check="systemctl is-active nfs-client.target >/dev/null 2>&1"
+            ;;
+        smb|SMB|cifs|CIFS)
+            proto="cifs"
+            printf "SMB server (e.g., 192.168.1.100): "
+            read -r server
+            [ -z "$server" ] && { warn "Server required; skipping."; return 0; }
+            printf "SMB share path (e.g., /shares/iso): "
+            read -r export_path
+            [ -z "$export_path" ] && { warn "Share path required; skipping."; return 0; }
+            printf "SMB username [guest]: "
+            read -r smb_user
+            smb_user="${smb_user:-guest}"
+            printf "SMB password (leave blank for guest): "
+            read -r -s smb_pass
+            echo ""
+            local mount_opts="soft,noatime,nofail,username=$smb_user"
+            [ -n "$smb_pass" ] && mount_opts="$mount_opts,password=$smb_pass"
+            local fstab_line="//$server$export_path"
+            local pkg="cifs-utils"
+            local svc_check="true"
+            ;;
+        *)
+            warn "Unknown protocol '$proto'; skipping."
+            return 0
+            ;;
+    esac
+
+    printf "Local mount point [/mnt/msd-isos]: "
+    read -r mount_point
+    mount_point="${mount_point:-/mnt/msd-isos}"
+
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would install $pkg, create $mount_point, mount $fstab_line."
+        return 0
+    fi
+
+    make_rw
+    info "Installing $pkg if missing..."
+    if ! command -v "${pkg%-utils}" >/dev/null 2>&1; then
+        if command -v pacman >/dev/null 2>&1; then
+            pacman -S --noconfirm "$pkg" >/dev/null 2>&1 && ok "Installed $pkg." || warn "Failed to install $pkg."
+        elif command -v apt-get >/dev/null 2>&1; then
+            apt-get update -qq >/dev/null 2>&1 && apt-get install -y -qq "$pkg" >/dev/null 2>&1 && ok "Installed $pkg." || warn "Failed to install $pkg."
+        else
+            warn "No package manager found; please install $pkg manually."
+        fi
+    else
+        ok "$pkg already installed."
+    fi
+
+    mkdir -p "$mount_point"
+
+    if grep -q "$mount_point" /etc/fstab 2>/dev/null; then
+        warn "Mount point $mount_point already in fstab; not duplicating."
+    else
+        if [ -f /etc/fstab ]; then
+            cp /etc/fstab /etc/fstab.bak.$(date +%Y%m%d-%H%M%S)
+        fi
+        if [ "$proto" = "nfs" ]; then
+            echo "$server:$export_path  $mount_point  nfs  $mount_opts  0  0" >> /etc/fstab
+        else
+            echo "$fstab_line  $mount_point  cifs  $mount_opts  0  0" >> /etc/fstab
+        fi
+        ok "Added fstab entry for $mount_point."
+    fi
+
+    if mount "$mount_point" 2>/dev/null; then
+        ok "Mounted $mount_point successfully."
+    else
+        warn "Mount failed; check server and path."
+    fi
+
+    MSD_STORAGE_CHANGED=true
+}
+
+apply_msd_drives() {
+    info "Configuring additional MSD drives..."
+
+    if ! python_yaml_available; then
+        warn "Python YAML module required; cannot configure MSD drives."
+        return 0
+    fi
+
+    local num_drives=2
+    if [ "$YES" = false ]; then
+        printf "\nNumber of MSD drives (1-2) [2]: "
+        read -r num_input
+        num_drives="${num_input:-2}"
+        case "$num_drives" in
+            1) num_drives=1 ;;
+            2|*) num_drives=2 ;;
+        esac
+    fi
+
+    local patch="/tmp/pikvm-optimizer.msd-drives.yaml"
+
+    if [ "$num_drives" -ge 2 ]; then
+        cat > "$patch" <<'EOF'
+otg:
+    devices:
+        msd:
+            type: msd
+            bind: 0
+        msd_data:
+            type: msd
+            bind: 0
+EOF
+    else
+        cat > "$patch" <<'EOF'
+otg:
+    devices:
+        msd:
+            type: msd
+            bind: 0
+EOF
+    fi
+
+    if [ "$DRY_RUN" = true ]; then
+        rm -f "$patch"
+        ok "DRY RUN: would configure $num_drives MSD drive(s)."
+        return 0
+    fi
+
+    merge_yaml_patch "$patch"
+    rm -f "$patch"
+    MSD_DRIVES_CHANGED=true
+    ok "MSD drives configured: $num_drives drive(s)"
+}
+
+apply_override_d() {
+    info "Enabling override.d YAML fragment support..."
+
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would create /etc/kvmd/override.d/ directory."
+        return 0
+    fi
+
+    make_rw
+    mkdir -p /etc/kvmd/override.d
+
+    if [ -f /etc/kvmd/override.yaml ]; then
+        local migrate_content
+        migrate_content="$(grep -v '^[[:space:]]*#' /etc/kvmd/override.yaml | sed '/^[[:space:]]*$/d' 2>/dev/null || true)"
+        if [ -n "$migrate_content" ] && [ "$migrate_content" != "kvmd: {}" ] && [ "$migrate_content" != "{}" ]; then
+            if [ ! -f /etc/kvmd/override.d/00-custom.yaml ]; then
+                cp /etc/kvmd/override.yaml /etc/kvmd/override.d/00-custom.yaml
+                ok "Migrated current override.yaml to override.d/00-custom.yaml."
+            else
+                ok "override.d/00-custom.yaml already exists; not overwriting."
+            fi
+        fi
+    fi
+
+    # Embed documentation as YAML comments in the migrated file
+    local doc_comment="# PiKVM override.d directory - YAML fragments loaded alphabetically after override.yaml
+# Created by PiKVM Optimizer v1.3.0
+# Use numbered prefixes to control load order (e.g., 00-base.yaml, 99-custom.yaml)"
+    if [ -f /etc/kvmd/override.d/00-custom.yaml ]; then
+        local first_line
+        first_line="$(head -1 /etc/kvmd/override.d/00-custom.yaml 2>/dev/null || true)"
+        if [ "$first_line" != "# PiKVM override.d directory - YAML fragments loaded alphabetically after override.yaml" ]; then
+            {
+                echo "$doc_comment"
+                echo ""
+                cat /etc/kvmd/override.d/00-custom.yaml
+            } > /etc/kvmd/override.d/00-custom.yaml.tmp
+            mv /etc/kvmd/override.d/00-custom.yaml.tmp /etc/kvmd/override.d/00-custom.yaml
+        fi
+    fi
+
+    ok "override.d directory created at /etc/kvmd/override.d/"
+    box_line "Place YAML fragment files in /etc/kvmd/override.d/ to override settings."
+    OVERRIDE_D_CHANGED=true
+}
+
+# ------------------------------------------------------------------------------
 # Uninstall / restore / health
 # ------------------------------------------------------------------------------
 
 uninstall_core_config() {
     info "Removing optimizer-managed core YAML keys..."
     delete_yaml_paths \
-        kvmd.streamer.gop \
+        kvmd.streamer.h264_gop \
         kvmd.streamer.quality \
         kvmd.streamer.h264_bitrate \
-        kvmd.streamer.h264_boost \
-        kvmd.vnc.mac_command_as_meta \
-        kvmd.vnc.relative_scroll
+        vnc.auth.vncauth.enabled
 }
 
 uninstall_mtu() {
@@ -2026,6 +3039,22 @@ uninstall_mtu() {
     ok "Removed Tailscale MTU link file."
 }
 
+uninstall_tcp_keepalive() {
+    info "Removing TCP keepalive sysctl config..."
+
+    local sysctl_file="/etc/sysctl.d/99-pikvm-tcp-keepalive.conf"
+
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would remove $sysctl_file."
+        return 0
+    fi
+
+    make_rw
+    rm -f "$sysctl_file"
+    ok "Removed $sysctl_file."
+    warn "Keepalive changes persist until reboot or 'sysctl -p' reload."
+}
+
 uninstall_edid() {
     info "Removing EDID file and config key..."
 
@@ -2039,6 +3068,36 @@ uninstall_edid() {
     make_rw
     rm -f /etc/kvmd/tc358743-edid.hex
     ok "Removed EDID file."
+}
+
+uninstall_quality_cap() {
+    info "Restoring VNC quality cap from backup..."
+
+    local server_py
+    server_py="$(find /usr/lib -path '*/kvmd/apps/vnc/server.py' -print -quit 2>/dev/null || true)"
+
+    if [ -z "$server_py" ]; then
+        warn "kvmd-vnc server.py not found; quality cap restore skipped."
+        return 0
+    fi
+
+    local latest_backup=""
+    latest_backup="$(ls -t "${server_py}.bak."* 2>/dev/null | head -n 1 || true)"
+
+    if [ -z "$latest_backup" ]; then
+        warn "No VNC server.py backup found; quality cap may still be applied."
+        return 0
+    fi
+
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would restore $server_py from $latest_backup."
+        return 0
+    fi
+
+    make_rw
+    cp "$latest_backup" "$server_py"
+    ok "Restored $server_py from backup $latest_backup."
+    restart_service_if_exists kvmd-vnc.service
 }
 
 uninstall_ssl() {
@@ -2189,6 +3248,68 @@ uninstall_sudoers() {
     ok "Removed sudoers rule if present: $file"
 }
 
+uninstall_msd_bios_fix() {
+    info "Removing MSD BIOS config key..."
+    delete_yaml_paths otg.devices.msd.start
+}
+
+uninstall_usb_preset() {
+    info "Resetting USB device preset..."
+    delete_yaml_paths otg.devices.keyboard otg.devices.mouse otg.devices.msd otg.devices.hid
+}
+
+uninstall_usb_extra() {
+    info "Removing USB extras config keys..."
+    delete_yaml_paths otg.devices.ethernet otg.devices.serial otg.devices.audio
+}
+
+uninstall_msd_storage() {
+    info "Removing network storage configuration..."
+
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would unmount $mount_point and remove fstab entry."
+        return 0
+    fi
+
+    make_rw
+
+    local mount_point=""
+    if [ -f /etc/fstab ]; then
+        mount_point="$(grep -E 'nfs|cifs' /etc/fstab 2>/dev/null | awk '{print $2}' | head -1 || true)"
+    fi
+
+    if [ -n "$mount_point" ] && mountpoint -q "$mount_point" 2>/dev/null; then
+        umount "$mount_point" 2>/dev/null && ok "Unmounted $mount_point." || warn "Could not unmount $mount_point."
+    fi
+
+    if [ -f /etc/fstab ]; then
+        local fstab_bak="/etc/fstab.bak.$(date +%Y%m%d-%H%M%S)"
+        cp /etc/fstab "$fstab_bak"
+        grep -v -E 'nfs|cifs' /etc/fstab > /etc/fstab.tmp && mv /etc/fstab.tmp /etc/fstab
+        ok "Removed network storage fstab entries."
+    fi
+
+    delete_yaml_paths kvmd.msd.otg_devices msd.storage
+}
+
+uninstall_msd_drives() {
+    info "Resetting MSD drives to single drive..."
+    delete_yaml_paths otg.devices.msd_data
+}
+
+uninstall_override_d() {
+    info "Removing override.d directory..."
+
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would remove /etc/kvmd/override.d/."
+        return 0
+    fi
+
+    make_rw
+    rm -rf /etc/kvmd/override.d
+    ok "Removed /etc/kvmd/override.d/ directory."
+}
+
 restore_from_backup() {
     draw "RESTORE CONFIG BACKUP"
 
@@ -2322,6 +3443,20 @@ health_check() {
         info "Tailscale watchdog script not installed."
     fi
 
+    local qc_server_py
+    qc_server_py="$(find /usr/lib -path '*/kvmd/apps/vnc/server.py' -print -quit 2>/dev/null || true)"
+    if [ -n "$qc_server_py" ] && grep -q "tight_jpeg_quality, 15)" "$qc_server_py" 2>/dev/null; then
+        ok "VNC quality cap applied (max JPEG quality 15)."
+    else
+        info "VNC quality cap not applied."
+    fi
+
+    if [ -f /etc/sysctl.d/99-pikvm-tcp-keepalive.conf ]; then
+        ok "TCP keepalive tuning file exists."
+    else
+        info "TCP keepalive tuning not installed."
+    fi
+
     if [ -f "$INSTALL_PATH" ]; then
         ok "Permanent optimizer install exists: $INSTALL_PATH"
     else
@@ -2338,6 +3473,18 @@ health_check() {
         info "Log file exists: $LOG_FILE"
     else
         info "Log file not created yet."
+    fi
+
+    if [ -d /etc/kvmd/override.d ]; then
+        ok "override.d directory exists."
+    else
+        info "override.d directory not created."
+    fi
+
+    if grep -q -E 'nfs|cifs' /etc/fstab 2>/dev/null; then
+        ok "Network storage (NFS/SMB) configured in /etc/fstab."
+    else
+        info "No network storage mount in /etc/fstab."
     fi
 
     close_box
@@ -2364,7 +3511,7 @@ final_restart() {
 
     # Post-run reboot warning for modules that benefit from reboot
     if [ "${RUN_MTU:-false}" = true ] || [ "${RUN_EDID:-false}" = true ]; then
-        warn "Some changes (MTU/EDID) may require a reboot to take full effect."
+        warn "Some changes (MTU/EDID/keepalive) may require a reboot to take full effect."
     fi
 
     if [ "${REBOOT:-false}" = true ]; then
@@ -2462,7 +3609,9 @@ if [ "$MODE" = "uninstall" ]; then
     draw "UNINSTALL / CLEANUP"
 
     if [ "$UN_CORE" = true ]; then uninstall_core_config; fi
+    if [ "$UN_QUALITY_CAP" = true ]; then uninstall_quality_cap; fi
     if [ "$UN_MTU" = true ]; then uninstall_mtu; fi
+    if [ "$UN_KEEPALIVE" = true ]; then uninstall_tcp_keepalive; fi
     if [ "$UN_EDID" = true ]; then uninstall_edid; fi
     if [ "$UN_SSL" = true ]; then uninstall_ssl; fi
     if [ "$UN_FAN" = true ]; then uninstall_fan; fi
@@ -2470,6 +3619,13 @@ if [ "$MODE" = "uninstall" ]; then
     if [ "$UN_KEY" = true ]; then uninstall_ssh_key; fi
     if [ "$UN_INSTALL" = true ]; then uninstall_permanent_install; fi
     if [ "$UN_SUDO" = true ]; then uninstall_sudoers; fi
+    if [ "$UN_MSD_BIOS_FIX" = true ]; then uninstall_msd_bios_fix; fi
+    if [ "$UN_TAILSCALE_CRASH_FIX" = true ]; then uninstall_tailscale_crash_fix; fi
+    if [ "$UN_USB_PRESET" = true ]; then uninstall_usb_preset; fi
+    if [ "$UN_USB_EXTRA" = true ]; then uninstall_usb_extra; fi
+    if [ "$UN_MSD_STORAGE" = true ]; then uninstall_msd_storage; fi
+    if [ "$UN_MSD_DRIVES" = true ]; then uninstall_msd_drives; fi
+    if [ "$UN_OVERRIDE_D" = true ]; then uninstall_override_d; fi
 
     final_restart
 
@@ -2477,7 +3633,7 @@ if [ "$MODE" = "uninstall" ]; then
     make_ro
 
     box_line ""
-    box_line_color "$G" "[DONE] Uninstall/cleanup finished."
+    box_line "${G}[DONE]${RESET} Uninstall/cleanup finished."
     rollback_hint
     close_box
     exit 0
@@ -2492,7 +3648,9 @@ if [ "$MODE" = "uninstall" ]; then
     draw "UNINSTALL / CLEANUP"
 
     if [ "$UN_CORE" = true ]; then uninstall_core_config; fi
+    if [ "$UN_QUALITY_CAP" = true ]; then uninstall_quality_cap; fi
     if [ "$UN_MTU" = true ]; then uninstall_mtu; fi
+    if [ "$UN_KEEPALIVE" = true ]; then uninstall_tcp_keepalive; fi
     if [ "$UN_EDID" = true ]; then uninstall_edid; fi
     if [ "$UN_SSL" = true ]; then uninstall_ssl; fi
     if [ "$UN_FAN" = true ]; then uninstall_fan; fi
@@ -2500,13 +3658,21 @@ if [ "$MODE" = "uninstall" ]; then
     if [ "$UN_KEY" = true ]; then uninstall_ssh_key; fi
     if [ "$UN_INSTALL" = true ]; then uninstall_permanent_install; fi
     if [ "$UN_SUDO" = true ]; then uninstall_sudoers; fi
+    if [ "$UN_MSD_BIOS_FIX" = true ]; then uninstall_msd_bios_fix; fi
+    if [ "$UN_TAILSCALE_CRASH_FIX" = true ]; then uninstall_tailscale_crash_fix; fi
+    if [ "$UN_USB_PRESET" = true ]; then uninstall_usb_preset; fi
+    if [ "$UN_USB_EXTRA" = true ]; then uninstall_usb_extra; fi
+    if [ "$UN_MSD_STORAGE" = true ]; then uninstall_msd_storage; fi
+    if [ "$UN_MSD_DRIVES" = true ]; then uninstall_msd_drives; fi
+    if [ "$UN_OVERRIDE_D" = true ]; then uninstall_override_d; fi
 
-    final_restart
+    final_restart || true
+
     SUCCESS=true
     make_ro
 
     box_line ""
-    box_line_color "$G" "[DONE] Uninstall/cleanup finished."
+    box_line "${G}[DONE]${RESET} Uninstall/cleanup finished."
     rollback_hint
     close_box
     exit 0
@@ -2529,10 +3695,20 @@ fi
 draw "EXECUTING OPTIMIZATION PACKS"
 
 if [ "$RUN_CORE" = true ]; then apply_core_config; fi
+if [ "$RUN_QUALITY_CAP" = true ]; then apply_vnc_quality_cap; fi
 if [ "$RUN_MTU" = true ]; then apply_tailscale_mtu; fi
+if [ "$RUN_KEEPALIVE" = true ]; then apply_tcp_keepalive; fi
 if [ "$RUN_EDID" = true ]; then apply_edid; fi
 if [ "$RUN_SSL" = true ]; then apply_tailscale_ssl; fi
 if [ "$RUN_FAN" = true ]; then apply_fan_curve; fi
+if [ "$RUN_MSD_BIOS_FIX" = true ]; then apply_msd_bios_fix; fi
+if [ "$RUN_USB_PRESET" = true ]; then apply_usb_preset; fi
+if [ "$RUN_USB_EXTRA" = true ]; then apply_usb_extra; fi
+if [ "$RUN_MSD_STORAGE" = true ]; then apply_msd_storage; fi
+if [ "$RUN_MSD_DRIVES" = true ]; then apply_msd_drives; fi
+if [ "$RUN_OVERRIDE_D" = true ]; then apply_override_d; fi
+if [ "$RUN_TAILSCALE_DIAG" = true ]; then apply_tailscale_diag; fi
+if [ "$RUN_TAILSCALE_CRASH_FIX" = true ]; then apply_tailscale_crash_fix; fi
 
 enable_oled_if_present
 
@@ -2550,9 +3726,9 @@ make_ro
 box_line ""
 
 if [ "$DRY_RUN" = true ]; then
-    box_line_color "$G" "[DONE] Dry run finished. No persistent changes were intentionally made."
+    box_line "${G}[DONE]${RESET} Dry run finished. No persistent changes were intentionally made."
 else
-    box_line_color "$G" "[DONE] Optimization routine finished."
+    box_line "${G}[DONE]${RESET} Optimization routine finished."
 fi
 
 if [ -n "$BACKUP_FILE" ]; then
