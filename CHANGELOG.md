@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-06-16
+
+### Added
+
+- `--tailscale-setup` module to install/start Tailscale and run interactive `tailscale up`
+- WiFi SSID scanner/selector for interactive `--wifi` setup
+
+### Changed
+
+- Clarified Dell D2721H bundled EDID language and why it is the safe default
+- Clarified root vs Web/KVM admin password prompts
+- Clarified network storage setup requirements, persistence, and rerun guidance
+- Uninstall-all no longer prompts for SSH key or disabled sudo cleanup by default
+- Sudo cleanup now removes only optimizer-managed sudoers files without prompting
+
+### Fixed
+
+- 2FA setup now creates `/etc/kvmd/override.d` before using `kvmd-totp`
+
 ## [1.4.0] - 2026-06-16
 
 ### Added

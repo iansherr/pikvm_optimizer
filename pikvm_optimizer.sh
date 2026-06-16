@@ -2,12 +2,12 @@
 # ==============================================================================
 # PiKVM Optimizer
 # Single-file macOS/Linux launcher with embedded PiKVM remote optimizer.
-# Version: 1.4.0
+# Version: 1.4.1
 # ==============================================================================
 
 set -euo pipefail
 
-VERSION="1.4.0"
+VERSION="1.4.1"
 
 # ------------------------------------------------------------------------------
 # Local launcher options
@@ -71,6 +71,7 @@ Module flags:
   --quality-cap      Enable VNC JPEG quality cap (fixes Screens client issues)
   --keepalive        Enable TCP keepalive tuning for Tailscale stability
   --tailscale-diag   Run Tailscale networking diagnosis (read-only)
+  --tailscale-setup  Install/enable Tailscale and run tailscale up
   --tailscale-crash-fix  Enable Tailscale crash mitigations for 32-bit ARM (auto-detects arch)
   --wifi             Configure WiFi (AP fallback + client mode)
   --root-password    Change root password
@@ -160,7 +161,7 @@ while [ "$#" -gt 0 ]; do
             REMOTE_ARGS+=(--none)
             shift
             ;;
-        --core|--no-core|--mtu|--edid|--ssl|--fan|--watchdog|--key|--install|--sudo|--quality-cap|--keepalive|--tailscale-diag|--tailscale-crash-fix|--wifi|--root-password|--2fa|--first-run|--msd-bios-fix|--usb-preset|--usb-extra|--msd-storage|--msd-drives|--override-d)
+        --core|--no-core|--mtu|--edid|--ssl|--fan|--watchdog|--key|--install|--sudo|--quality-cap|--keepalive|--tailscale-diag|--tailscale-setup|--tailscale-crash-fix|--wifi|--root-password|--2fa|--first-run|--msd-bios-fix|--usb-preset|--usb-extra|--msd-storage|--msd-drives|--override-d)
             REMOTE_ARGS+=("$1")
             shift
             ;;
@@ -425,6 +426,7 @@ UN_QUALITY_CAP=false
 UN_KEEPALIVE=false
 
 RUN_TAILSCALE_DIAG=false
+RUN_TAILSCALE_SETUP=false
 RUN_TAILSCALE_CRASH_FIX=false
 RUN_WIFI=false
 RUN_ROOT_PASSWORD=false
@@ -489,6 +491,7 @@ while [ "$#" -gt 0 ]; do
             RUN_QUALITY_CAP=false
             RUN_KEEPALIVE=false
             RUN_TAILSCALE_DIAG=false
+            RUN_TAILSCALE_SETUP=false
             RUN_TAILSCALE_CRASH_FIX=false
             RUN_WIFI=false
             RUN_ROOT_PASSWORD=false
@@ -516,6 +519,7 @@ while [ "$#" -gt 0 ]; do
             RUN_QUALITY_CAP=true
             RUN_KEEPALIVE=true
             RUN_TAILSCALE_DIAG=true
+            RUN_TAILSCALE_SETUP=false
             RUN_TAILSCALE_CRASH_FIX=true
             RUN_WIFI=false
             RUN_ROOT_PASSWORD=false
@@ -544,6 +548,7 @@ while [ "$#" -gt 0 ]; do
             RUN_QUALITY_CAP=false
             RUN_KEEPALIVE=false
             RUN_TAILSCALE_DIAG=false
+            RUN_TAILSCALE_SETUP=false
             RUN_TAILSCALE_CRASH_FIX=false
             RUN_WIFI=false
             RUN_ROOT_PASSWORD=false
@@ -605,6 +610,11 @@ while [ "$#" -gt 0 ]; do
             ;;
         --tailscale-diag)
             RUN_TAILSCALE_DIAG=true
+            FLAGS_PROVIDED=true
+            shift
+            ;;
+        --tailscale-setup)
+            RUN_TAILSCALE_SETUP=true
             FLAGS_PROVIDED=true
             shift
             ;;
@@ -1558,6 +1568,7 @@ apply_recommended_preset() {
     RUN_QUALITY_CAP=false
     RUN_KEEPALIVE=false
     RUN_TAILSCALE_DIAG=false
+    RUN_TAILSCALE_SETUP=false
     RUN_TAILSCALE_CRASH_FIX=false
     RUN_WIFI=false
     RUN_ROOT_PASSWORD=false
@@ -1584,6 +1595,7 @@ apply_all_preset() {
     RUN_QUALITY_CAP=true
     RUN_KEEPALIVE=true
     RUN_TAILSCALE_DIAG=true
+    RUN_TAILSCALE_SETUP=false
     RUN_TAILSCALE_CRASH_FIX=true
     RUN_WIFI=false
     RUN_ROOT_PASSWORD=false
@@ -1610,6 +1622,7 @@ apply_none_preset() {
     RUN_QUALITY_CAP=false
     RUN_KEEPALIVE=false
     RUN_TAILSCALE_DIAG=false
+    RUN_TAILSCALE_SETUP=false
     RUN_TAILSCALE_CRASH_FIX=false
     RUN_WIFI=false
     RUN_ROOT_PASSWORD=false
@@ -1644,6 +1657,7 @@ interactive_module_menu() {
         box_line "[0] [$(yn_marker "$RUN_KEEPALIVE")] TCP keepalive tuning (Tailscale)"
         box_line ""
         box_line "[t] [$(yn_marker "$RUN_TAILSCALE_DIAG")] Tailscale networking diagnosis (read-only)"
+        box_line "[g] [$(yn_marker "$RUN_TAILSCALE_SETUP")] Tailscale install/login setup"
         box_line "[c] [$(yn_marker "$RUN_TAILSCALE_CRASH_FIX")] Tailscale crash fix (32-bit ARM mitigations)"
         box_line "[w] [$(yn_marker "$RUN_WIFI")] WiFi configuration (AP + client)"
         box_line "[x] [$(yn_marker "$RUN_ROOT_PASSWORD")] Change root password"
@@ -1681,6 +1695,7 @@ interactive_module_menu() {
             9) toggle_bool RUN_QUALITY_CAP ;;
             0) toggle_bool RUN_KEEPALIVE ;;
             t|T) toggle_bool RUN_TAILSCALE_DIAG ;;
+            g|G) toggle_bool RUN_TAILSCALE_SETUP ;;
             c|C) toggle_bool RUN_TAILSCALE_CRASH_FIX ;;
             w|W) toggle_bool RUN_WIFI ;;
             x|X) toggle_bool RUN_ROOT_PASSWORD ;;
@@ -1783,9 +1798,9 @@ interactive_uninstall_menu() {
                 UN_SSL=true
                 UN_FAN=true
                 UN_WATCHDOG=true
-                UN_KEY=true
+                UN_KEY=false
                 UN_INSTALL=true
-                UN_SUDO=true
+                UN_SUDO=false
                 UN_QUALITY_CAP=true
                 UN_KEEPALIVE=true
                 UN_MSD_BIOS_FIX=true
@@ -1906,6 +1921,50 @@ EOF
     warn "Not restarting systemd-networkd automatically to avoid dropping SSH."
 }
 
+apply_tailscale_setup() {
+    info "Setting up Tailscale..."
+
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would install tailscale if missing, enable tailscaled, and run tailscale up interactively."
+        return 0
+    fi
+
+    make_rw
+
+    if ! command -v tailscale >/dev/null 2>&1; then
+        if command -v pacman >/dev/null 2>&1; then
+            info "Installing tailscale package..."
+            if ! pacman -S --needed --noconfirm tailscale >/dev/null 2>&1; then
+                warn "Could not install tailscale with pacman. Check package mirrors/network and rerun."
+                return 0
+            fi
+        else
+            warn "tailscale not installed and pacman not found; skipped setup."
+            return 0
+        fi
+    fi
+
+    systemctl enable --now tailscaled.service >/dev/null 2>&1 || warn "Could not enable/start tailscaled.service."
+
+    if tailscale status >/dev/null 2>&1; then
+        ok "Tailscale is already authenticated and running."
+        return 0
+    fi
+
+    if [ "$YES" = true ]; then
+        warn "Tailscale installed/started, but login requires an interactive auth URL."
+        box_line "Run later: tailscale up"
+        return 0
+    fi
+
+    box_line "Tailscale will print a login URL. Open it, authenticate, then return here."
+    if tailscale up; then
+        ok "Tailscale login completed."
+    else
+        warn "tailscale up did not complete. You can rerun: tailscale up"
+    fi
+}
+
 apply_edid() {
     info "Configuring persistent EDID..."
 
@@ -1924,7 +1983,8 @@ apply_edid() {
         printf "\nEDID source options:\n"
         printf "  URL (https://...)              - Download EDID from URL\n"
         printf "  Local file path                - Use EDID file on PiKVM\n"
-        printf "  'dell' or 'd2721h'             - Use built-in DELL D2721H reference EDID\n"
+        printf "  'dell' or 'd2721h'             - Use bundled Dell D2721H 1080p60 EDID\n"
+        printf "                                    (safe default; avoids macOS 1080p24/Screens issues)\n"
         printf "  'current'                      - Persist existing EDID (if any)\n"
         printf "  Leave blank                    - Skip EDID setup\n"
         printf "EDID source: "
@@ -1959,7 +2019,7 @@ EOF
     local edid_source_lower
     edid_source_lower="$(printf "%s" "$edid_source" | tr '[:upper:]' '[:lower:]')"
 
-    # Built-in DELL D2721H reference EDID (no 1080p24 VIC 32 — macOS-friendly)
+    # Bundled Dell D2721H EDID without 1080p24 VIC 32, which avoids macOS/Screens mode selection issues.
     if [ "$edid_source_lower" = "dell" ] || [ "$edid_source_lower" = "d2721h" ]; then
         info "Using built-in DELL D2721H reference EDID."
         cat > "$edid_dest" <<'DELL_EDID_HEX'
@@ -2730,6 +2790,15 @@ wifi_interfaces() {
     iw dev 2>/dev/null | awk '$1 == "Interface" { print $2 }'
 }
 
+scan_wifi_ssids() {
+    local iface="$1"
+    ip link set "$iface" up >/dev/null 2>&1 || true
+    iw dev "$iface" scan 2>/dev/null \
+        | awk -F'SSID: ' '/SSID: / { if ($2 != "") print $2 }' \
+        | awk '!seen[$0]++' \
+        | head -20
+}
+
 apply_wifi() {
     info "Configuring WiFi client/AP fallback..."
 
@@ -2782,9 +2851,32 @@ apply_wifi() {
         warn "Non-interactive WiFi setup: client WiFi skipped; AP fallback will be configured."
         warn "Generated AP credentials will be shown once; save them now."
     else
-        printf "\nWiFi client network SSID (blank to skip client mode): "
+        local scanned_ssids=()
+        local scanned_ssid=""
+        while IFS= read -r scanned_ssid; do
+            [ -n "$scanned_ssid" ] && scanned_ssids+=("$scanned_ssid")
+        done < <(scan_wifi_ssids "$client_iface")
+
+        if [ "${#scanned_ssids[@]}" -gt 0 ]; then
+            printf "\nDetected WiFi networks on %s:\n" "$client_iface"
+            local idx=1
+            for scanned_ssid in "${scanned_ssids[@]}"; do
+                printf "  %d) %s\n" "$idx" "$scanned_ssid"
+                idx=$((idx + 1))
+            done
+            printf "Choose network number, type SSID manually, or leave blank to skip client mode: "
+        else
+            printf "\nNo WiFi networks detected on %s. Type SSID manually or leave blank to skip client mode: " "$client_iface"
+        fi
         read -r client_ssid
+        if [ -n "$client_ssid" ] && printf "%s" "$client_ssid" | grep -qE '^[0-9]+$'; then
+            local selected_index=$((client_ssid - 1))
+            if [ "$selected_index" -ge 0 ] && [ "$selected_index" -lt "${#scanned_ssids[@]}" ]; then
+                client_ssid="${scanned_ssids[$selected_index]}"
+            fi
+        fi
         if [ -n "$client_ssid" ]; then
+            printf "Selected WiFi SSID: %s\n" "$client_ssid"
             printf "WiFi client password: "
             stty -echo 2>/dev/null || true
             read -r client_pass
@@ -3013,6 +3105,8 @@ uninstall_wifi() {
 
 apply_root_password() {
     info "Changing root password..."
+    box_line "This changes the Linux root password used for SSH, serial console, and su -."
+    box_line "It is separate from the Web/KVM admin password."
     if [ "$YES" = true ]; then
         warn "Root password change requires interactive input; skipped in non-interactive mode."
         return 0
@@ -3042,6 +3136,8 @@ apply_root_password() {
 
 apply_first_run() {
     info "Running first-run setup..."
+    box_line "This changes the PiKVM Web UI/API/VNC admin password."
+    box_line "It is separate from the Linux root password used for SSH."
     if [ "$YES" = true ]; then
         warn "First-run setup requires interactive password input; skipped in non-interactive mode."
         return 0
@@ -3051,7 +3147,7 @@ apply_first_run() {
         return 0
     fi
     local pass1 pass2
-    printf "New Web/KVM admin password: "
+    printf "New Web/KVM admin password for user 'admin': "
     stty -echo 2>/dev/null || true
     read -r pass1
     stty echo 2>/dev/null || true
@@ -3084,6 +3180,7 @@ apply_2fa() {
         return 0
     fi
     make_rw
+    mkdir -p /etc/kvmd/override.d
     if kvmd-totp show >/tmp/pikvm-optimizer-totp.txt 2>/dev/null; then
         warn "2FA already configured; showing existing QR/secret."
     else
@@ -3107,6 +3204,7 @@ uninstall_2fa() {
         return 0
     fi
     make_rw
+    mkdir -p /etc/kvmd/override.d
     kvmd-totp del >/dev/null 2>&1 || true
     ok "2FA removed."
 }
@@ -3281,7 +3379,9 @@ apply_msd_storage() {
     fi
 
     printf "\nNetwork storage for MSD ISO images\n"
-    printf "This mounts a network share so ISOs can be stored remotely.\n\n"
+    printf "This permanently mounts an existing NFS/SMB share so PiKVM can browse ISOs from it.\n"
+    printf "You need the storage server address/name and exported path/share now.\n"
+    printf "If you have not created a network share yet, leave this blank and rerun --msd-storage later.\n\n"
     printf "Protocol (nfs/smb) [nfs]: "
     read -r proto
     proto="${proto:-nfs}"
@@ -3289,10 +3389,10 @@ apply_msd_storage() {
     case "$proto" in
         nfs|NFS)
             proto="nfs"
-            printf "NFS server (e.g., 192.168.1.100): "
+            printf "NFS server IP/hostname (e.g., 192.168.1.100 or nas.local; blank to skip): "
             read -r server
             [ -z "$server" ] && { warn "Server required; skipping."; return 0; }
-            printf "NFS export path (e.g., /volume1/iso): "
+            printf "NFS export path on that server (e.g., /volume1/iso): "
             read -r export_path
             [ -z "$export_path" ] && { warn "Export path required; skipping."; return 0; }
             local mount_opts="soft,noatime,nofail"
@@ -3302,10 +3402,10 @@ apply_msd_storage() {
             ;;
         smb|SMB|cifs|CIFS)
             proto="cifs"
-            printf "SMB server (e.g., 192.168.1.100): "
+            printf "SMB server IP/hostname (e.g., 192.168.1.100 or nas.local; blank to skip): "
             read -r server
             [ -z "$server" ] && { warn "Server required; skipping."; return 0; }
-            printf "SMB share path (e.g., /shares/iso): "
+            printf "SMB share path on that server (e.g., /isos or /shares/iso): "
             read -r export_path
             [ -z "$export_path" ] && { warn "Share path required; skipping."; return 0; }
             printf "SMB username [guest]: "
@@ -3369,6 +3469,7 @@ apply_msd_storage() {
         ok "Mounted $mount_point successfully."
     else
         warn "Mount failed; check server and path."
+        box_line "You can rerun --msd-storage later after the share/server is ready."
     fi
 
     MSD_STORAGE_CHANGED=true
@@ -3679,34 +3780,23 @@ uninstall_permanent_install() {
 }
 
 uninstall_sudoers() {
-    info "Removing restricted sudoers rule..."
+    info "Removing optimizer-managed sudoers rules..."
 
-    local sudo_user=""
-    local file=""
-
-    if [ "$YES" = true ]; then
-        warn "Sudoers cleanup requires interactive username input; skipped in --yes mode."
+    local files
+    files="$(ls /etc/sudoers.d/pikvm-optimizer-* 2>/dev/null || true)"
+    if [ -z "$files" ]; then
+        info "No optimizer-managed sudoers rules found."
         return 0
     fi
-
-    printf "\nNon-root user whose optimizer sudoers rule to remove (e.g., 'admin'): "
-    read -r sudo_user
-
-    if [ -z "$sudo_user" ] || [ "$sudo_user" = "root" ]; then
-        warn "Invalid or root user; skipped sudoers cleanup."
-        return 0
-    fi
-
-    file="/etc/sudoers.d/pikvm-optimizer-$sudo_user"
 
     if [ "$DRY_RUN" = true ]; then
-        ok "DRY RUN: would remove $file."
+        ok "DRY RUN: would remove optimizer-managed sudoers rules."
         return 0
     fi
 
     make_rw
-    rm -f "$file"
-    ok "Removed sudoers rule if present: $file"
+    rm -f /etc/sudoers.d/pikvm-optimizer-*
+    ok "Removed optimizer-managed sudoers rules."
 }
 
 uninstall_msd_bios_fix() {
@@ -4173,6 +4263,7 @@ if [ "$RUN_MSD_STORAGE" = true ]; then apply_msd_storage; fi
 if [ "$RUN_MSD_DRIVES" = true ]; then apply_msd_drives; fi
 if [ "$RUN_OVERRIDE_D" = true ]; then apply_override_d; fi
 if [ "$RUN_TAILSCALE_DIAG" = true ]; then apply_tailscale_diag; fi
+if [ "$RUN_TAILSCALE_SETUP" = true ]; then apply_tailscale_setup; fi
 if [ "$RUN_TAILSCALE_CRASH_FIX" = true ]; then apply_tailscale_crash_fix; fi
 if [ "$RUN_WIFI" = true ]; then apply_wifi; fi
 if [ "$RUN_ROOT_PASSWORD" = true ]; then apply_root_password; fi
