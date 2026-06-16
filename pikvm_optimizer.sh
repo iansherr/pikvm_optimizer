@@ -2,12 +2,12 @@
 # ==============================================================================
 # PiKVM Optimizer
 # Single-file macOS/Linux launcher with embedded PiKVM remote optimizer.
-# Version: 1.3.0
+# Version: 1.4.0
 # ==============================================================================
 
 set -euo pipefail
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 
 # ------------------------------------------------------------------------------
 # Local launcher options
@@ -72,6 +72,10 @@ Module flags:
   --keepalive        Enable TCP keepalive tuning for Tailscale stability
   --tailscale-diag   Run Tailscale networking diagnosis (read-only)
   --tailscale-crash-fix  Enable Tailscale crash mitigations for 32-bit ARM (auto-detects arch)
+  --wifi             Configure WiFi (AP fallback + client mode)
+  --root-password    Change root password
+  --2fa              Enable two-factor authentication (TOTP)
+  --first-run        Run first-run setup wizard
   --msd-bios-fix     Enable MSD BIOS compatibility mode (fixes UEFI boot-loop)
   --usb-preset       Configure USB device preset (Normal/BIOS mode)
   --usb-extra        Enable USB extras (Ethernet/Serial/Audio)
@@ -156,7 +160,7 @@ while [ "$#" -gt 0 ]; do
             REMOTE_ARGS+=(--none)
             shift
             ;;
-        --core|--no-core|--mtu|--edid|--ssl|--fan|--watchdog|--key|--install|--sudo|--quality-cap|--keepalive|--tailscale-diag|--tailscale-crash-fix|--msd-bios-fix|--usb-preset|--usb-extra|--msd-storage|--msd-drives|--override-d)
+        --core|--no-core|--mtu|--edid|--ssl|--fan|--watchdog|--key|--install|--sudo|--quality-cap|--keepalive|--tailscale-diag|--tailscale-crash-fix|--wifi|--root-password|--2fa|--first-run|--msd-bios-fix|--usb-preset|--usb-extra|--msd-storage|--msd-drives|--override-d)
             REMOTE_ARGS+=("$1")
             shift
             ;;
@@ -304,7 +308,7 @@ cancel_local() {
 }
 
 if [ "$PRINT_REMOTE" = true ]; then
-    sed -n '/^PIKVM_REMOTE_SCRIPT$/,/^PIKVM_REMOTE_SCRIPT$/p' "$0" | sed '1d;$d'
+    sed -n "/<<'PIKVM_REMOTE_SCRIPT'$/,/^PIKVM_REMOTE_SCRIPT$/p" "$0" | sed '1d;$d'
     exit 0
 fi
 
@@ -422,6 +426,10 @@ UN_KEEPALIVE=false
 
 RUN_TAILSCALE_DIAG=false
 RUN_TAILSCALE_CRASH_FIX=false
+RUN_WIFI=false
+RUN_ROOT_PASSWORD=false
+RUN_2FA=false
+RUN_FIRST_RUN=false
 RUN_MSD_BIOS_FIX=false
 RUN_USB_PRESET=false
 RUN_USB_EXTRA=false
@@ -429,6 +437,8 @@ RUN_MSD_STORAGE=false
 RUN_MSD_DRIVES=false
 RUN_OVERRIDE_D=false
 
+UN_WIFI=false
+UN_2FA=false
 UN_MSD_BIOS_FIX=false
 UN_TAILSCALE_CRASH_FIX=false
 UN_USB_PRESET=false
@@ -479,6 +489,11 @@ while [ "$#" -gt 0 ]; do
             RUN_QUALITY_CAP=false
             RUN_KEEPALIVE=false
             RUN_TAILSCALE_DIAG=false
+            RUN_TAILSCALE_CRASH_FIX=false
+            RUN_WIFI=false
+            RUN_ROOT_PASSWORD=false
+            RUN_2FA=false
+            RUN_FIRST_RUN=false
             RUN_MSD_BIOS_FIX=true
             RUN_USB_PRESET=false
             RUN_USB_EXTRA=false
@@ -502,6 +517,10 @@ while [ "$#" -gt 0 ]; do
             RUN_KEEPALIVE=true
             RUN_TAILSCALE_DIAG=true
             RUN_TAILSCALE_CRASH_FIX=true
+            RUN_WIFI=false
+            RUN_ROOT_PASSWORD=false
+            RUN_2FA=false
+            RUN_FIRST_RUN=false
             RUN_MSD_BIOS_FIX=true
             RUN_USB_PRESET=true
             RUN_USB_EXTRA=true
@@ -526,6 +545,10 @@ while [ "$#" -gt 0 ]; do
             RUN_KEEPALIVE=false
             RUN_TAILSCALE_DIAG=false
             RUN_TAILSCALE_CRASH_FIX=false
+            RUN_WIFI=false
+            RUN_ROOT_PASSWORD=false
+            RUN_2FA=false
+            RUN_FIRST_RUN=false
             RUN_MSD_BIOS_FIX=false
             RUN_USB_PRESET=false
             RUN_USB_EXTRA=false
@@ -587,6 +610,26 @@ while [ "$#" -gt 0 ]; do
             ;;
         --tailscale-crash-fix)
             RUN_TAILSCALE_CRASH_FIX=true
+            FLAGS_PROVIDED=true
+            shift
+            ;;
+        --wifi)
+            RUN_WIFI=true
+            FLAGS_PROVIDED=true
+            shift
+            ;;
+        --root-password)
+            RUN_ROOT_PASSWORD=true
+            FLAGS_PROVIDED=true
+            shift
+            ;;
+        --2fa)
+            RUN_2FA=true
+            FLAGS_PROVIDED=true
+            shift
+            ;;
+        --first-run)
+            RUN_FIRST_RUN=true
             FLAGS_PROVIDED=true
             shift
             ;;
@@ -1515,6 +1558,11 @@ apply_recommended_preset() {
     RUN_QUALITY_CAP=false
     RUN_KEEPALIVE=false
     RUN_TAILSCALE_DIAG=false
+    RUN_TAILSCALE_CRASH_FIX=false
+    RUN_WIFI=false
+    RUN_ROOT_PASSWORD=false
+    RUN_2FA=false
+    RUN_FIRST_RUN=false
     RUN_MSD_BIOS_FIX=true
     RUN_USB_PRESET=false
     RUN_USB_EXTRA=false
@@ -1537,6 +1585,10 @@ apply_all_preset() {
     RUN_KEEPALIVE=true
     RUN_TAILSCALE_DIAG=true
     RUN_TAILSCALE_CRASH_FIX=true
+    RUN_WIFI=false
+    RUN_ROOT_PASSWORD=false
+    RUN_2FA=false
+    RUN_FIRST_RUN=false
     RUN_MSD_BIOS_FIX=true
     RUN_USB_PRESET=true
     RUN_USB_EXTRA=true
@@ -1559,6 +1611,10 @@ apply_none_preset() {
     RUN_KEEPALIVE=false
     RUN_TAILSCALE_DIAG=false
     RUN_TAILSCALE_CRASH_FIX=false
+    RUN_WIFI=false
+    RUN_ROOT_PASSWORD=false
+    RUN_2FA=false
+    RUN_FIRST_RUN=false
     RUN_MSD_BIOS_FIX=false
     RUN_USB_PRESET=false
     RUN_USB_EXTRA=false
@@ -1589,6 +1645,10 @@ interactive_module_menu() {
         box_line ""
         box_line "[t] [$(yn_marker "$RUN_TAILSCALE_DIAG")] Tailscale networking diagnosis (read-only)"
         box_line "[c] [$(yn_marker "$RUN_TAILSCALE_CRASH_FIX")] Tailscale crash fix (32-bit ARM mitigations)"
+        box_line "[w] [$(yn_marker "$RUN_WIFI")] WiFi configuration (AP + client)"
+        box_line "[x] [$(yn_marker "$RUN_ROOT_PASSWORD")] Change root password"
+        box_line "[z] [$(yn_marker "$RUN_2FA")] Two-factor authentication (TOTP)"
+        box_line "[f] [$(yn_marker "$RUN_FIRST_RUN")] First-run setup wizard"
         box_line "[m] [$(yn_marker "$RUN_MSD_BIOS_FIX")] MSD BIOS compatibility (UEFI boot-loop fix)"
         box_line "[p] [$(yn_marker "$RUN_USB_PRESET")] USB device preset (Normal/BIOS mode)"
         box_line "[e] [$(yn_marker "$RUN_USB_EXTRA")] USB extras (Ethernet/Serial/Audio)"
@@ -1622,6 +1682,10 @@ interactive_module_menu() {
             0) toggle_bool RUN_KEEPALIVE ;;
             t|T) toggle_bool RUN_TAILSCALE_DIAG ;;
             c|C) toggle_bool RUN_TAILSCALE_CRASH_FIX ;;
+            w|W) toggle_bool RUN_WIFI ;;
+            x|X) toggle_bool RUN_ROOT_PASSWORD ;;
+            z|Z) toggle_bool RUN_2FA ;;
+            f|F) toggle_bool RUN_FIRST_RUN ;;
             m|M) toggle_bool RUN_MSD_BIOS_FIX ;;
             p|P) toggle_bool RUN_USB_PRESET ;;
             e|E) toggle_bool RUN_USB_EXTRA ;;
@@ -1675,6 +1739,8 @@ interactive_uninstall_menu() {
         box_line "[0] [$(yn_marker "$UN_KEEPALIVE")] Remove TCP keepalive sysctl config"
         box_line ""
         box_line "[c] [$(yn_marker "$UN_TAILSCALE_CRASH_FIX")] Remove Tailscale crash fix (IPv6 sysctl + watchdog config)"
+        box_line "[w] [$(yn_marker "$UN_WIFI")] Remove WiFi configuration"
+        box_line "[z] [$(yn_marker "$UN_2FA")] Remove 2FA configuration"
         box_line "[m] [$(yn_marker "$UN_MSD_BIOS_FIX")] Remove MSD BIOS config key"
         box_line "[p] [$(yn_marker "$UN_USB_PRESET")] Reset USB device preset to defaults"
         box_line "[e] [$(yn_marker "$UN_USB_EXTRA")] Remove USB extras config keys"
@@ -1702,6 +1768,8 @@ interactive_uninstall_menu() {
             9) toggle_bool UN_QUALITY_CAP ;;
             0) toggle_bool UN_KEEPALIVE ;;
             c|C) toggle_bool UN_TAILSCALE_CRASH_FIX ;;
+            w|W) toggle_bool UN_WIFI ;;
+            z|Z) toggle_bool UN_2FA ;;
             m|M) toggle_bool UN_MSD_BIOS_FIX ;;
             p|P) toggle_bool UN_USB_PRESET ;;
             e|E) toggle_bool UN_USB_EXTRA ;;
@@ -1722,6 +1790,8 @@ interactive_uninstall_menu() {
                 UN_KEEPALIVE=true
                 UN_MSD_BIOS_FIX=true
                 UN_TAILSCALE_CRASH_FIX=true
+                UN_WIFI=true
+                UN_2FA=true
                 UN_USB_PRESET=true
                 UN_USB_EXTRA=true
                 UN_MSD_STORAGE=true
@@ -1742,6 +1812,8 @@ interactive_uninstall_menu() {
                 UN_KEEPALIVE=false
                 UN_MSD_BIOS_FIX=false
                 UN_TAILSCALE_CRASH_FIX=false
+                UN_WIFI=false
+                UN_2FA=false
                 UN_USB_PRESET=false
                 UN_USB_EXTRA=false
                 UN_MSD_STORAGE=false
@@ -2648,6 +2720,395 @@ uninstall_tailscale_crash_fix() {
 
     systemctl daemon-reload 2>/dev/null || true
     ok "Tailscale crash fix removed."
+}
+
+generate_wifi_password() {
+    tr -d '-' </proc/sys/kernel/random/uuid | cut -c1-16
+}
+
+wifi_interfaces() {
+    iw dev 2>/dev/null | awk '$1 == "Interface" { print $2 }'
+}
+
+apply_wifi() {
+    info "Configuring WiFi client/AP fallback..."
+
+    if ! command -v iw >/dev/null 2>&1; then
+        warn "iw not installed; skipped WiFi setup."
+        return 0
+    fi
+    if ! command -v wpa_passphrase >/dev/null 2>&1; then
+        warn "wpa_passphrase not installed; skipped WiFi setup."
+        return 0
+    fi
+    if ! command -v hostapd >/dev/null 2>&1; then
+        warn "hostapd not installed; skipped WiFi AP setup."
+        return 0
+    fi
+    if ! command -v dnsmasq >/dev/null 2>&1; then
+        warn "dnsmasq not installed; skipped WiFi AP setup."
+        return 0
+    fi
+
+    local ifaces=()
+    local iface
+    while IFS= read -r iface; do
+        [ -n "$iface" ] && ifaces+=("$iface")
+    done < <(wifi_interfaces)
+
+    if [ "${#ifaces[@]}" -eq 0 ]; then
+        warn "No WiFi interfaces found; plug in/enable WiFi and rerun."
+        return 0
+    fi
+
+    local client_iface="${ifaces[0]}"
+    local ap_iface="${ifaces[0]}"
+    local simultaneous=false
+    if [ "${#ifaces[@]}" -gt 1 ]; then
+        ap_iface="${ifaces[1]}"
+        simultaneous=true
+    fi
+
+    local client_ssid=""
+    local client_pass=""
+    local country="US"
+    local ap_ssid="PiKVM-${HOSTNAME:-pikvm}"
+    local ap_pass
+    local ap_ssid_input=""
+    local ap_pass_input=""
+    ap_pass="$(generate_wifi_password)"
+
+    if [ "$YES" = true ]; then
+        warn "Non-interactive WiFi setup: client WiFi skipped; AP fallback will be configured."
+        warn "Generated AP credentials will be shown once; save them now."
+    else
+        printf "\nWiFi client network SSID (blank to skip client mode): "
+        read -r client_ssid
+        if [ -n "$client_ssid" ]; then
+            printf "WiFi client password: "
+            stty -echo 2>/dev/null || true
+            read -r client_pass
+            stty echo 2>/dev/null || true
+            printf "\n"
+        fi
+        printf "Country code [US]: "
+        read -r country
+        country="${country:-US}"
+        printf "Fallback AP SSID [$ap_ssid]: "
+        read -r ap_ssid_input
+        ap_ssid="${ap_ssid_input:-$ap_ssid}"
+        printf "Fallback AP password [generated]: "
+        stty -echo 2>/dev/null || true
+        read -r ap_pass_input
+        stty echo 2>/dev/null || true
+        printf "\n"
+        ap_pass="${ap_pass_input:-$ap_pass}"
+    fi
+
+    if [ "${#ap_pass}" -lt 8 ] || [ "${#ap_pass}" -gt 63 ]; then
+        warn "AP password must be 8-63 characters; skipped WiFi setup."
+        return 0
+    fi
+    if [ -n "$client_ssid" ] && [ "${#client_pass}" -lt 8 ]; then
+        warn "Client WiFi password must be at least 8 characters; skipped client config."
+        client_ssid=""
+        client_pass=""
+    fi
+
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would configure client interface $client_iface and AP interface $ap_iface."
+        ok "DRY RUN: AP SSID would be $ap_ssid."
+        return 0
+    fi
+
+    make_rw
+    mkdir -p /etc/systemd/network /etc/wpa_supplicant /etc/hostapd /etc/systemd/system
+
+    cat > "/etc/systemd/network/25-${client_iface}.network" <<EOF
+[Match]
+Name=${client_iface}
+
+[Network]
+DHCP=yes
+DNSSEC=no
+
+[DHCP]
+ClientIdentifier=mac
+RouteMetric=50
+EOF
+
+    if [ -n "$client_ssid" ]; then
+        {
+            printf "country=%s\n" "$country"
+            wpa_passphrase "$client_ssid" "$client_pass" | grep -v '^[[:space:]]*#psk='
+        } > "/etc/wpa_supplicant/wpa_supplicant-${client_iface}.conf"
+        chmod 640 "/etc/wpa_supplicant/wpa_supplicant-${client_iface}.conf"
+        ok "Configured WiFi client network for $client_iface."
+    fi
+
+    cat > /usr/local/bin/pikvm-wifi-auto.sh <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+CLIENT_ENABLED="$( [ -n "$client_ssid" ] && printf true || printf false )"
+AP_ADDR="10.77.77.1/24"
+AP_IP="10.77.77.1"
+DHCP_RANGE="10.77.77.50,10.77.77.150,12h"
+COUNTRY="${country}"
+AP_SSID="${ap_ssid}"
+AP_PASS="${ap_pass}"
+
+wifi_interfaces() {
+    iw dev 2>/dev/null | awk '\$1 == "Interface" { print \$2 }'
+}
+
+choose_ifaces() {
+    mapfile -t WIFI_IFACES < <(wifi_interfaces)
+    if [ "\${#WIFI_IFACES[@]}" -eq 0 ]; then
+        exit 0
+    fi
+    CLIENT_IFACE="\${WIFI_IFACES[0]}"
+    AP_IFACE="\${WIFI_IFACES[0]}"
+    SIMULTANEOUS=false
+    if [ "\${#WIFI_IFACES[@]}" -gt 1 ]; then
+        AP_IFACE="\${WIFI_IFACES[1]}"
+        SIMULTANEOUS=true
+    fi
+}
+
+has_default_route() {
+    ip route show default 2>/dev/null | grep -q .
+}
+
+start_client() {
+    [ "\$CLIENT_ENABLED" = true ] || return 0
+    systemctl enable --now systemd-networkd.service >/dev/null 2>&1 || true
+    systemctl enable --now "wpa_supplicant@\${CLIENT_IFACE}.service" >/dev/null 2>&1 || true
+}
+
+stop_ap() {
+    systemctl stop "hostapd@\${AP_IFACE}.service" >/dev/null 2>&1 || true
+    systemctl stop pikvm-wifi-ap-dnsmasq.service >/dev/null 2>&1 || true
+}
+
+start_ap() {
+    if [ "\$SIMULTANEOUS" != true ]; then
+        systemctl stop "wpa_supplicant@\${CLIENT_IFACE}.service" >/dev/null 2>&1 || true
+    fi
+    cat > "/etc/hostapd/\${AP_IFACE}.conf" <<APCONF
+interface=\${AP_IFACE}
+driver=nl80211
+country_code=\${COUNTRY}
+ssid=\${AP_SSID}
+hw_mode=g
+channel=6
+ieee80211n=1
+wmm_enabled=1
+auth_algs=1
+wpa=2
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP
+wpa_passphrase=\${AP_PASS}
+APCONF
+    chmod 640 "/etc/hostapd/\${AP_IFACE}.conf"
+    cat > /run/pikvm-wifi-dnsmasq.conf <<DNSCONF
+interface=\${AP_IFACE}
+bind-interfaces
+dhcp-range=\${DHCP_RANGE}
+dhcp-option=3,\${AP_IP}
+dhcp-option=6,\${AP_IP}
+DNSCONF
+    ip link set "\$AP_IFACE" up >/dev/null 2>&1 || true
+    ip addr flush dev "\$AP_IFACE" >/dev/null 2>&1 || true
+    ip addr add "\$AP_ADDR" dev "\$AP_IFACE" >/dev/null 2>&1 || true
+    systemctl start "hostapd@\${AP_IFACE}.service" >/dev/null 2>&1 || true
+    systemctl start pikvm-wifi-ap-dnsmasq.service >/dev/null 2>&1 || true
+}
+
+choose_ifaces
+
+if [ "\$SIMULTANEOUS" = true ]; then
+    start_client
+    start_ap
+    exit 0
+fi
+
+start_client
+sleep 25
+if has_default_route; then
+    stop_ap
+else
+    start_ap
+fi
+EOF
+    chmod +x /usr/local/bin/pikvm-wifi-auto.sh
+
+    cat > /etc/systemd/system/pikvm-wifi-ap-dnsmasq.service <<EOF
+[Unit]
+Description=PiKVM fallback WiFi AP DHCP/DNS
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/dnsmasq --no-daemon --conf-file=/run/pikvm-wifi-dnsmasq.conf
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    cat > /etc/systemd/system/pikvm-wifi-auto.service <<'EOF'
+[Unit]
+Description=PiKVM WiFi client/AP auto mode
+After=network.target systemd-networkd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/pikvm-wifi-auto.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    cat > /etc/systemd/system/pikvm-wifi-auto.timer <<'EOF'
+[Unit]
+Description=Re-evaluate PiKVM WiFi client/AP mode
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=2min
+Unit=pikvm-wifi-auto.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable --now pikvm-wifi-auto.timer >/dev/null 2>&1 || true
+    systemctl start pikvm-wifi-auto.service >/dev/null 2>&1 || true
+
+    ok "WiFi auto mode configured."
+    box_line "Client iface: $client_iface"
+    box_line "AP iface: $ap_iface"
+    box_line "AP SSID: $ap_ssid"
+    box_line "AP password: $ap_pass"
+    box_line "AP URL after fallback: https://10.77.77.1/"
+}
+
+uninstall_wifi() {
+    info "Removing WiFi auto configuration..."
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would remove PiKVM WiFi auto services and generated configs."
+        return 0
+    fi
+    make_rw
+    systemctl disable --now pikvm-wifi-auto.timer pikvm-wifi-auto.service pikvm-wifi-ap-dnsmasq.service >/dev/null 2>&1 || true
+    rm -f /usr/local/bin/pikvm-wifi-auto.sh
+    rm -f /etc/systemd/system/pikvm-wifi-auto.service /etc/systemd/system/pikvm-wifi-auto.timer /etc/systemd/system/pikvm-wifi-ap-dnsmasq.service
+    rm -f /etc/systemd/network/25-wlan*.network /etc/wpa_supplicant/wpa_supplicant-wlan*.conf /etc/hostapd/wlan*.conf
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    ok "WiFi auto configuration removed."
+}
+
+apply_root_password() {
+    info "Changing root password..."
+    if [ "$YES" = true ]; then
+        warn "Root password change requires interactive input; skipped in non-interactive mode."
+        return 0
+    fi
+    local pass1 pass2
+    printf "New root password: "
+    stty -echo 2>/dev/null || true
+    read -r pass1
+    stty echo 2>/dev/null || true
+    printf "\nConfirm root password: "
+    stty -echo 2>/dev/null || true
+    read -r pass2
+    stty echo 2>/dev/null || true
+    printf "\n"
+    if [ -z "$pass1" ] || [ "$pass1" != "$pass2" ]; then
+        warn "Passwords empty or mismatched; skipped root password change."
+        return 0
+    fi
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would change root password."
+        return 0
+    fi
+    make_rw
+    printf 'root:%s\n' "$pass1" | chpasswd
+    ok "Root password changed."
+}
+
+apply_first_run() {
+    info "Running first-run setup..."
+    if [ "$YES" = true ]; then
+        warn "First-run setup requires interactive password input; skipped in non-interactive mode."
+        return 0
+    fi
+    if ! command -v kvmd-htpasswd >/dev/null 2>&1; then
+        warn "kvmd-htpasswd not found; skipped Web UI password setup."
+        return 0
+    fi
+    local pass1 pass2
+    printf "New Web/KVM admin password: "
+    stty -echo 2>/dev/null || true
+    read -r pass1
+    stty echo 2>/dev/null || true
+    printf "\nConfirm Web/KVM admin password: "
+    stty -echo 2>/dev/null || true
+    read -r pass2
+    stty echo 2>/dev/null || true
+    printf "\n"
+    if [ -z "$pass1" ] || [ "$pass1" != "$pass2" ]; then
+        warn "Passwords empty or mismatched; skipped Web UI password change."
+        return 0
+    fi
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would change Web/KVM admin password."
+        return 0
+    fi
+    make_rw
+    printf '%s\n%s\n' "$pass1" "$pass2" | kvmd-htpasswd set admin >/dev/null
+    ok "Web/KVM admin password changed."
+}
+
+apply_2fa() {
+    info "Configuring PiKVM 2FA..."
+    if ! command -v kvmd-totp >/dev/null 2>&1; then
+        warn "kvmd-totp not found; skipped 2FA setup."
+        return 0
+    fi
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would initialize or show PiKVM TOTP secret."
+        return 0
+    fi
+    make_rw
+    if kvmd-totp show >/tmp/pikvm-optimizer-totp.txt 2>/dev/null; then
+        warn "2FA already configured; showing existing QR/secret."
+    else
+        kvmd-totp init >/tmp/pikvm-optimizer-totp.txt
+        ok "2FA initialized."
+    fi
+    while IFS= read -r line; do
+        box_line "$line"
+    done </tmp/pikvm-optimizer-totp.txt
+    rm -f /tmp/pikvm-optimizer-totp.txt
+}
+
+uninstall_2fa() {
+    info "Removing PiKVM 2FA..."
+    if ! command -v kvmd-totp >/dev/null 2>&1; then
+        warn "kvmd-totp not found; skipped 2FA removal."
+        return 0
+    fi
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would remove PiKVM TOTP secret."
+        return 0
+    fi
+    make_rw
+    kvmd-totp del >/dev/null 2>&1 || true
+    ok "2FA removed."
 }
 
 apply_msd_bios_fix() {
@@ -3621,6 +4082,8 @@ if [ "$MODE" = "uninstall" ]; then
     if [ "$UN_SUDO" = true ]; then uninstall_sudoers; fi
     if [ "$UN_MSD_BIOS_FIX" = true ]; then uninstall_msd_bios_fix; fi
     if [ "$UN_TAILSCALE_CRASH_FIX" = true ]; then uninstall_tailscale_crash_fix; fi
+    if [ "$UN_WIFI" = true ]; then uninstall_wifi; fi
+    if [ "$UN_2FA" = true ]; then uninstall_2fa; fi
     if [ "$UN_USB_PRESET" = true ]; then uninstall_usb_preset; fi
     if [ "$UN_USB_EXTRA" = true ]; then uninstall_usb_extra; fi
     if [ "$UN_MSD_STORAGE" = true ]; then uninstall_msd_storage; fi
@@ -3660,6 +4123,8 @@ if [ "$MODE" = "uninstall" ]; then
     if [ "$UN_SUDO" = true ]; then uninstall_sudoers; fi
     if [ "$UN_MSD_BIOS_FIX" = true ]; then uninstall_msd_bios_fix; fi
     if [ "$UN_TAILSCALE_CRASH_FIX" = true ]; then uninstall_tailscale_crash_fix; fi
+    if [ "$UN_WIFI" = true ]; then uninstall_wifi; fi
+    if [ "$UN_2FA" = true ]; then uninstall_2fa; fi
     if [ "$UN_USB_PRESET" = true ]; then uninstall_usb_preset; fi
     if [ "$UN_USB_EXTRA" = true ]; then uninstall_usb_extra; fi
     if [ "$UN_MSD_STORAGE" = true ]; then uninstall_msd_storage; fi
@@ -3709,6 +4174,10 @@ if [ "$RUN_MSD_DRIVES" = true ]; then apply_msd_drives; fi
 if [ "$RUN_OVERRIDE_D" = true ]; then apply_override_d; fi
 if [ "$RUN_TAILSCALE_DIAG" = true ]; then apply_tailscale_diag; fi
 if [ "$RUN_TAILSCALE_CRASH_FIX" = true ]; then apply_tailscale_crash_fix; fi
+if [ "$RUN_WIFI" = true ]; then apply_wifi; fi
+if [ "$RUN_ROOT_PASSWORD" = true ]; then apply_root_password; fi
+if [ "$RUN_2FA" = true ]; then apply_2fa; fi
+if [ "$RUN_FIRST_RUN" = true ]; then apply_first_run; fi
 
 enable_oled_if_present
 

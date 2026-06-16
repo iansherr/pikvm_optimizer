@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-06-16
+
+### Added
+
+- `--wifi` module for PiKVM WiFi auto mode:
+  - Client mode via native `systemd-networkd` + `wpa_supplicant@wlanX`
+  - Fallback AP mode via `hostapd@wlanX` + dedicated dnsmasq service
+  - Runtime WiFi interface detection so a later USB dongle can enable simultaneous client+AP mode
+  - Auto re-evaluation timer (`pikvm-wifi-auto.timer`) for client/AP fallback decisions
+- `--root-password` module for interactive Linux root password changes
+- `--first-run` module for interactive Web/KVM `admin` password setup with `kvmd-htpasswd`
+- `--2fa` module for PiKVM TOTP setup/show using `kvmd-totp`
+- 2FA uninstall support via `kvmd-totp del`
+
+### Changed
+
+- `--all` remains limited to safe non-secret modules; WiFi, root password, first-run, and 2FA require explicit selection
+- `--print-remote` extraction now matches the heredoc opener correctly
+
 ## [1.3.0] - 2026-06-16
 
 ### Added
