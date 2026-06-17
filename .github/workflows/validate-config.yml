@@ -1,0 +1,58 @@
+name: Config Validation
+
+on:
+  push:
+    branches: [main, dev]
+    paths:
+      - 'pikvm_optimizer.sh'
+      - 'tests/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'pikvm_optimizer.sh'
+      - 'tests/**'
+  workflow_dispatch:
+
+jobs:
+  validate-patches:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+
+      - name: Install kvmd
+        run: pip install kvmd
+
+      - name: Download platform-specific main.yaml
+        run: |
+          mkdir -p /usr/lib/kvmd /etc/kvmd/override.d
+          curl -sSL -o /usr/lib/kvmd/main.yaml \
+            https://raw.githubusercontent.com/pikvm/kvmd/master/configs/kvmd/main/v4plus-hdmi-rpi4.yaml
+
+      - name: Run patch validation suite
+        run: bash tests/validate_patches.sh
+
+      - name: Run shell syntax check
+        run: bash -n pikvm_optimizer.sh
+
+      - name: Check remote script syntax
+        run: |
+          ./pikvm_optimizer.sh --print-remote > /tmp/pikvm-optimizer-remote.sh
+          bash -n /tmp/pikvm-optimizer-remote.sh
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: '.'
+          severity: warning
+        env:
+          SHELLCHECK_OPTS: -e SC1091,SC2154

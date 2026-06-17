@@ -1,0 +1,60 @@
+# PiKVM Optimizer declarative config template.
+# Omitted keys use the script defaults. Explicit CLI flags override this file.
+# Do not store passwords, TOTP secrets, WiFi passphrases, or private keys here.
+
+connection:
+  host: pikvm.local
+  user: root
+  # identity: ~/.ssh/id_ed25519
+
+run:
+  dry_run: true
+  non_interactive: false
+  # health_check: false
+  # uninstall: false
+  # restore: false
+  # reboot: false
+  # no_color: false
+
+# One of: recommended, all, none. Leave blank/null for the interactive default.
+preset: recommended
+
+modules:
+  core: true
+  mtu: false
+  edid: false
+  ssl: false
+  fan: false
+  watchdog: false
+  quality_cap: false
+  keepalive: false
+  tailscale_diag: false
+  tailscale_setup: false
+  tailscale_crash_fix: false
+  wifi: false
+  root_password: false
+  first_run: false
+  two_fa: false
+  msd_bios_fix: true
+  usb_preset: false
+  usb_extra: false
+  msd_storage: false
+  msd_drives: false
+  override_d: false
+  key: false
+  install: false
+
+edid:
+  # url: https://example.com/edid.hex
+  # file: /path/to/edid.hex
+
+ssh:
+  # Public key file to install when modules.key is true.
+  # pubkey_file: ~/.ssh/id_ed25519.pub
+
+wifi:
+  # Non-secret defaults for the interactive WiFi wizard.
+  # ssid: MyNetwork
+  country: US
+  # ap_ssid: PiKVM-setup
+  #   Fallback AP: hotspot PiKVM creates when client WiFi is unavailable.

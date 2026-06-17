@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2] - 2026-06-16
+
+### Changed
+
+- Reframed the install module as an on-device command install/update at `/usr/local/sbin/pikvm-optimizer`
+- Expanded README documentation for fresh setup, module behavior, official PiKVM docs, safety model, and on-device updates
+- Added remote script `--help` and `--version` output for installed/on-device usage
+- Added `--config` and `--write-config-template` for declarative, non-secret YAML configuration
+- Added standalone [`pikvm-optimizer.yaml.example`](pikvm-optimizer.yaml.example) template in the repo
+- Added non-secret WiFi wizard defaults via YAML or `--wifi-ssid`, `--wifi-country`, and `--wifi-ap-ssid`
+
+### Fixed
+
+- Fixed local and remote menu box rendering so ANSI color escapes no longer print literally or break border width
+- Added validation for remote options that require values
+- Clarified "fallback AP" prompt to explain it is a hotspot PiKVM creates when client WiFi is unavailable
+- Added "blank to skip" option to MSD storage protocol prompt so blank skips the entire module instead of defaulting to NFS
+- Added "blank to skip" option to MSD drives, NFS export path, and SMB share path prompts
+- Added "(blank to skip)" hint to root password, admin password, and TOTP verify prompts
+- Added password minimum-length hint to WiFi client password prompt
+- Added mandatory TOTP code verification after 2FA setup — retries 3 times, offers skip or disable on failure
+- Added password retry loop (3 attempts) for root and Web/KVM admin passwords — hard fails instead of silently skipping
+- Added preset feedback messages when toggling via interactive menu
+- Added visual section separators between module groups during execution
+- Added preset/summary line showing what preset or flags are active
+- Clarified Tailscale crash fix in-progress message to say "32-bit ARM"
+- Added section-comment headers grouping the execution block into hardware/networking/security
+- Fixed QR code rendering corruption by printing TOTP output outside the box border system
+- Clarified module selection menu prompt to show "Enter to proceed" instead of bare "Selection:"
+- Fixed installed/on-device cleanup so it never removes `/usr/local/sbin` or other non-temporary script directories
+- Limited MSD storage uninstall cleanup to optimizer-marked `/etc/fstab` entries
+- Hardened password and TOTP setup error handling
+- Restricted generated WiFi auto script permissions because it contains fallback AP credentials
+
 ## [1.4.1] - 2026-06-16
 
 ### Added

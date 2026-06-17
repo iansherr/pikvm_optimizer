@@ -2,20 +2,19 @@
 # ==============================================================================
 # PiKVM Optimizer
 # Single-file macOS/Linux launcher with embedded PiKVM remote optimizer.
-# Version: 1.4.1
+# Version: 1.4.2
 # ==============================================================================
 
 set -euo pipefail
 
-VERSION="1.4.1"
+VERSION="1.4.2"
 
 # ------------------------------------------------------------------------------
 # Local launcher options
 # ------------------------------------------------------------------------------
 
 DRY_RUN=false
-YES=false
-NO_COLOR_LOCAL=false
+LOCAL_YES=false
 PI_HOST=""
 PI_USER=""
 SSH_KEY=""
@@ -24,8 +23,10 @@ SUDO_USER=""
 EDID_URL=""
 EDID_FILE=""
 PRINT_REMOTE=false
-REBOOT=false
 REMOTE_ARGS=()
+
+CONFIG_FILE=""
+WRITE_CONFIG_TEMPLATE=""
 
 require_arg() {
     local opt="$1"
@@ -34,6 +35,215 @@ require_arg() {
         printf "Error: %s requires a value\n" "$opt" >&2
         exit 1
     fi
+}
+
+write_config_template() {
+    local target="$1"
+    local tmp=""
+
+    if [ "$target" != "-" ]; then
+        tmp="$(dirname "$target")"
+        if [ ! -d "$tmp" ]; then
+            printf "Error: parent directory does not exist: %s\n" "$tmp" >&2
+            exit 1
+        fi
+    fi
+
+    if [ "$target" = "-" ]; then
+        cat
+    else
+        cat > "$target"
+        printf "Wrote config template: %s\n" "$target"
+    fi <<'EOF'
+# PiKVM Optimizer declarative config template.
+# Omitted keys use the script defaults. Explicit CLI flags override this file.
+# Do not store passwords, TOTP secrets, WiFi passphrases, or private keys here.
+
+connection:
+  host: pikvm.local
+  user: root
+  # identity: ~/.ssh/id_ed25519
+
+run:
+  dry_run: true
+  non_interactive: false
+  # health_check: false
+  # uninstall: false
+  # restore: false
+  # reboot: false
+  # no_color: false
+
+# One of: recommended, all, none. Leave blank/null for the interactive default.
+preset: recommended
+
+modules:
+  core: true
+  mtu: false
+  edid: false
+  ssl: false
+  fan: false
+  watchdog: false
+  quality_cap: false
+  keepalive: false
+  tailscale_diag: false
+  tailscale_setup: false
+  tailscale_crash_fix: false
+  wifi: false
+  root_password: false
+  first_run: false
+  two_fa: false
+  msd_bios_fix: true
+  usb_preset: false
+  usb_extra: false
+  msd_storage: false
+  msd_drives: false
+  override_d: false
+  key: false
+  install: false
+
+edid:
+  # url: https://example.com/edid.hex
+  # file: /path/to/edid.hex
+
+ssh:
+  # Public key file to install when modules.key is true.
+  # pubkey_file: ~/.ssh/id_ed25519.pub
+
+wifi:
+  # Non-secret defaults for the interactive WiFi wizard.
+  # ssid: MyNetwork
+  country: US
+  # ap_ssid: PiKVM-setup
+  #   Fallback AP: hotspot PiKVM creates when client WiFi is unavailable.
+EOF
+}
+
+config_to_args() {
+    local config_path="$1"
+
+    if [ ! -f "$config_path" ]; then
+        printf "Error: config file not found: %s\n" "$config_path" >&2
+        exit 1
+    fi
+
+    python3 - "$config_path" <<'PY'
+import sys
+
+try:
+    import yaml
+except Exception:
+    print("Error: --config requires Python PyYAML on the launcher machine", file=sys.stderr)
+    sys.exit(1)
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as fh:
+    data = yaml.safe_load(fh) or {}
+
+if not isinstance(data, dict):
+    print("Error: config root must be a YAML mapping", file=sys.stderr)
+    sys.exit(1)
+
+args = []
+
+def section(name):
+    value = data.get(name) or {}
+    if not isinstance(value, dict):
+        print(f"Error: config section '{name}' must be a mapping", file=sys.stderr)
+        sys.exit(1)
+    return value
+
+def add_pair(flag, value):
+    if value is not None and value != "":
+        args.extend([flag, str(value)])
+
+def add_bool(flag, value):
+    if value is True:
+        args.append(flag)
+    elif value not in (False, None):
+        print(f"Error: {flag} must be true or false", file=sys.stderr)
+        sys.exit(1)
+
+conn = section("connection")
+add_pair("--host", conn.get("host"))
+add_pair("--user", conn.get("user"))
+add_pair("--identity", conn.get("identity"))
+
+run = section("run")
+run_bool_flags = [
+    ("dry_run", "--dry-run"),
+    ("non_interactive", "--yes"),
+    ("health_check", "--health-check"),
+    ("uninstall", "--uninstall"),
+    ("restore", "--restore"),
+    ("reboot", "--reboot"),
+    ("no_color", "--no-color"),
+]
+for key, flag in run_bool_flags:
+    value = run.get(key)
+    if key == "non_interactive":
+        value = run.get("non_interactive", run.get("yes", run.get(True)))
+    add_bool(flag, value)
+
+preset = data.get("preset")
+if preset not in (None, ""):
+    preset_map = {"recommended": "--recommended", "all": "--all", "none": "--none"}
+    if preset not in preset_map:
+        print("Error: preset must be recommended, all, none, or blank", file=sys.stderr)
+        sys.exit(1)
+    args.append(preset_map[preset])
+
+modules = section("modules")
+module_flags = {
+    "core": "--core",
+    "mtu": "--mtu",
+    "edid": "--edid",
+    "ssl": "--ssl",
+    "fan": "--fan",
+    "watchdog": "--watchdog",
+    "quality_cap": "--quality-cap",
+    "keepalive": "--keepalive",
+    "tailscale_diag": "--tailscale-diag",
+    "tailscale_setup": "--tailscale-setup",
+    "tailscale_crash_fix": "--tailscale-crash-fix",
+    "wifi": "--wifi",
+    "root_password": "--root-password",
+    "first_run": "--first-run",
+    "two_fa": "--2fa",
+    "msd_bios_fix": "--msd-bios-fix",
+    "usb_preset": "--usb-preset",
+    "usb_extra": "--usb-extra",
+    "msd_storage": "--msd-storage",
+    "msd_drives": "--msd-drives",
+    "override_d": "--override-d",
+    "key": "--key",
+    "install": "--install",
+}
+for key in modules:
+    if key not in module_flags:
+        print(f"Error: unknown module key: {key}", file=sys.stderr)
+        sys.exit(1)
+for key, flag in module_flags.items():
+    value = modules.get(key)
+    if key == "core" and value is False:
+        args.append("--no-core")
+    else:
+        add_bool(flag, value)
+
+edid = section("edid")
+add_pair("--edid-url", edid.get("url"))
+add_pair("--edid-file", edid.get("file"))
+
+ssh = section("ssh")
+add_pair("--pubkey-file", ssh.get("pubkey_file"))
+
+wifi = section("wifi")
+add_pair("--wifi-ssid", wifi.get("ssid"))
+add_pair("--wifi-country", wifi.get("country"))
+add_pair("--wifi-ap-ssid", wifi.get("ap_ssid"))
+
+for arg in args:
+    print(arg)
+PY
 }
 
 usage() {
@@ -45,6 +255,8 @@ Connection options:
   --host HOST        PiKVM IP address or hostname
   --user USER        SSH user, default: root
   --identity PATH    SSH identity file
+  --config PATH      Load declarative YAML config; later CLI flags override it
+  --write-config-template PATH|-  Write a config template and exit
 
 Run modes:
   --dry-run          Preview actions without persistent PiKVM changes
@@ -74,6 +286,9 @@ Module flags:
   --tailscale-setup  Install/enable Tailscale and run tailscale up
   --tailscale-crash-fix  Enable Tailscale crash mitigations for 32-bit ARM (auto-detects arch)
   --wifi             Configure WiFi (AP fallback + client mode)
+  --wifi-ssid SSID   Default WiFi client SSID for the interactive WiFi wizard
+  --wifi-country CC  Default WiFi country code for the interactive WiFi wizard
+  --wifi-ap-ssid SSID Default fallback AP SSID for the interactive WiFi wizard
   --root-password    Change root password
   --2fa              Enable two-factor authentication (TOTP)
   --first-run        Run first-run setup wizard
@@ -85,7 +300,7 @@ Module flags:
   --override-d       Enable override.d YAML fragment support
   --key              Enable SSH public key install module
   --pubkey-file PATH SSH public key file for non-interactive install
-  --install          Install optimizer permanently on PiKVM
+  --install          Install/update on-device command at /usr/local/sbin/pikvm-optimizer
   # --sudo             Configure restricted NOPASSWD sudo for installed optimizer (DISABLED)
   # --sudo-user USER   User for restricted sudo (non-interactive) (DISABLED)
 
@@ -104,11 +319,60 @@ Examples:
   $0 --host pikvm.local --health-check --yes
   $0 --host pikvm.local --uninstall
   $0 --host pikvm.local --key --pubkey-file ~/.ssh/id_ed25519.pub --yes
-  $0 --host pikvm.local --sudo --sudo-user admin --yes
+  $0 --host pikvm.local --install --yes
   $0 --host pikvm.local --edid --edid-url https://example.com/edid.hex --yes
+  $0 --write-config-template pikvm-optimizer.yaml
+  $0 --config pikvm-optimizer.yaml --dry-run
   $0 --print-remote > /tmp/pikvm-optimizer-remote.sh
 EOF
 }
+
+if [ "$#" -gt 0 ]; then
+    ORIGINAL_ARGS=("$@")
+    USER_ARGS=()
+
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            --config)
+                require_arg "$1" "${2:-}"
+                CONFIG_FILE="$2"
+                shift 2
+                ;;
+            --write-config-template)
+                require_arg "$1" "${2:-}"
+                WRITE_CONFIG_TEMPLATE="$2"
+                shift 2
+                ;;
+            *)
+                USER_ARGS+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    if [ -n "$WRITE_CONFIG_TEMPLATE" ]; then
+        write_config_template "$WRITE_CONFIG_TEMPLATE"
+        exit 0
+    fi
+
+    if [ -n "$CONFIG_FILE" ]; then
+        CONFIG_ARGS=()
+        CONFIG_ARGS_FILE="$(mktemp /tmp/pikvm-optimizer-config-args.XXXXXXXXXX)"
+        if ! config_to_args "$CONFIG_FILE" > "$CONFIG_ARGS_FILE"; then
+            rm -f "$CONFIG_ARGS_FILE"
+            exit 1
+        fi
+
+        while IFS= read -r arg; do
+            CONFIG_ARGS+=("$arg")
+        done < "$CONFIG_ARGS_FILE"
+        rm -f "$CONFIG_ARGS_FILE"
+
+        set -- "${CONFIG_ARGS[@]}" "${USER_ARGS[@]}"
+    else
+        set -- "${ORIGINAL_ARGS[@]}"
+    fi
+fi
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -133,7 +397,7 @@ while [ "$#" -gt 0 ]; do
             shift
             ;;
         --yes|--non-interactive)
-            YES=true
+            LOCAL_YES=true
             REMOTE_ARGS+=(--yes)
             shift
             ;;
@@ -164,6 +428,11 @@ while [ "$#" -gt 0 ]; do
         --core|--no-core|--mtu|--edid|--ssl|--fan|--watchdog|--key|--install|--sudo|--quality-cap|--keepalive|--tailscale-diag|--tailscale-setup|--tailscale-crash-fix|--wifi|--root-password|--2fa|--first-run|--msd-bios-fix|--usb-preset|--usb-extra|--msd-storage|--msd-drives|--override-d)
             REMOTE_ARGS+=("$1")
             shift
+            ;;
+        --wifi-ssid|--wifi-country|--wifi-ap-ssid)
+            require_arg "$1" "${2:-}"
+            REMOTE_ARGS+=("$1" "$2")
+            shift 2
             ;;
         --edid-url)
             require_arg "$1" "${2:-}"
@@ -199,13 +468,11 @@ while [ "$#" -gt 0 ]; do
             shift
             ;;
         --reboot)
-            REBOOT=true
             REMOTE_ARGS+=(--reboot)
             shift
             ;;
         --no-color)
             export NO_COLOR=true
-            NO_COLOR_LOCAL=true
             REMOTE_ARGS+=(--no-color)
             shift
             ;;
@@ -245,13 +512,13 @@ fi
 # Local launcher UI/helpers
 # ------------------------------------------------------------------------------
 
-R="\033[31m"
-G="\033[32m"
-Y="\033[33m"
-C="\033[36m"
-BOLD="\033[1m"
-DIM="\033[2m"
-RESET="\033[0m"
+R=$'\033[31m'
+G=$'\033[32m'
+Y=$'\033[33m'
+C=$'\033[36m'
+BOLD=$'\033[1m'
+DIM=$'\033[2m'
+RESET=$'\033[0m'
 
 if [ "${TERM:-}" = "dumb" ] || [ "${NO_COLOR:-false}" = "true" ]; then
     R=""
@@ -283,7 +550,8 @@ quote_args() {
 }
 
 cleanup_local() {
-    local rc=$?
+    local rc="${1:-$?}"
+    local remote_dir_q=""
 
     if [ "$LOCAL_CLEANED" = true ]; then
         exit "$rc"
@@ -292,7 +560,8 @@ cleanup_local() {
     LOCAL_CLEANED=true
 
     if [ -n "${PI_HOST:-}" ] && [ -n "${PI_USER:-}" ] && [ -n "${REMOTE_DIR:-}" ] && [ "${#SSH_OPTS[@]}" -gt 0 ]; then
-        ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "rm -rf '$REMOTE_DIR'" >/dev/null 2>&1 || true
+        remote_dir_q="$(shell_quote "$REMOTE_DIR")"
+        ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "rm -rf -- $remote_dir_q" >/dev/null 2>&1 || true
     fi
 
     # Close SSH multiplexed connection
@@ -305,7 +574,7 @@ cleanup_local() {
 
 cancel_local() {
     printf "\n%bCancelled locally. Cleaning up remote temp file if possible...%b\n" "$Y" "$RESET"
-    cleanup_local
+    cleanup_local 130
 }
 
 if [ "$PRINT_REMOTE" = true ]; then
@@ -313,19 +582,41 @@ if [ "$PRINT_REMOTE" = true ]; then
     exit 0
 fi
 
-printf "%b\n" "${C}${BOLD}╔══════════════════════════════════════════════════════════════════════════════╗${RESET}"
-printf "%b%s%b\n" "${C}${BOLD}║${RESET}" "  PiKVM Optimizer v${VERSION}                                  $(date +%Y-%m-%d)  ${C}${BOLD}║${RESET}"
-printf "%b%s%b\n" "${C}${BOLD}║${RESET}" "  Single-file macOS/Linux launcher with embedded PiKVM remote optimizer    ${C}${BOLD}║${RESET}"
-printf "%b\n" "${C}${BOLD}╚══════════════════════════════════════════════════════════════════════════════╝${RESET}"
+LOCAL_BOX_W=76
+local_box_border() {
+    local left="$1"
+    local right="$2"
+    local border="$left"
+    local i
+    for ((i = 0; i < LOCAL_BOX_W + 2; i++)); do
+        border+="═"
+    done
+    border+="$right"
+    printf "%b%s%b\n" "${C}${BOLD}" "$border" "$RESET"
+}
+
+local_box_line() {
+    local text="$1"
+    local plain
+    plain=$(printf "%s" "$text" | cut -c 1-"$LOCAL_BOX_W")
+    printf "%b║%b %-*s %b║%b\n" "${C}${BOLD}" "$RESET" "$LOCAL_BOX_W" "$plain" "${C}${BOLD}" "$RESET"
+}
+
+local_box_border "╔" "╗"
+local_box_line "PiKVM Optimizer v${VERSION}                                  $(date +%Y-%m-%d)"
+local_box_line "Single-file macOS/Linux launcher with embedded PiKVM remote optimizer"
+local_box_border "╚" "╝"
 
 if [ "$DRY_RUN" = true ]; then
     printf "%b\n" "${Y}${BOLD}DRY RUN ENABLED:${RESET} persistent PiKVM changes will be skipped where possible."
 fi
 
 printf "\n"
-printf "%bPress Enter to continue...%b\n" "$DIM" "$RESET"
-read -r
-printf "\n"
+if [ "$LOCAL_YES" != true ]; then
+    printf "%bPress Enter to continue...%b\n" "$DIM" "$RESET"
+    read -r
+    printf "\n"
+fi
 
 if [ -z "$PI_HOST" ]; then
     read -rp "PiKVM target IP or hostname: " PI_HOST
@@ -338,7 +629,7 @@ if [ -z "$PI_USER" ]; then
     PI_USER="${PI_USER:-root}"
 fi
 
-if [ -z "$SSH_KEY" ]; then
+if [ -z "$SSH_KEY" ] && [ "$LOCAL_YES" != true ]; then
     read -rp "Optional: SSH private key path (for key-based auth) [Enter to use SSH agent/keychain]: " SSH_KEY
 fi
 
@@ -382,7 +673,8 @@ REMOTE_DEST="${REMOTE_DIR}/optimizer.sh"
 
 printf "  Uploading embedded optimizer...\n"
 
-ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "cat > '$REMOTE_DEST' && chmod 700 '$REMOTE_DEST'" <<'PIKVM_REMOTE_SCRIPT'
+REMOTE_DEST_Q="$(shell_quote "$REMOTE_DEST")"
+ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "cat > $REMOTE_DEST_Q && chmod 700 $REMOTE_DEST_Q" <<'PIKVM_REMOTE_SCRIPT'
 #!/usr/bin/env bash
 # ==============================================================================
 # Embedded PiKVM Remote Optimizer
@@ -390,6 +682,8 @@ ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "cat > '$REMOTE_DEST' && chmod 700 
 
 set -euo pipefail
 set +e  # Disable exit-on-error; we handle errors manually
+
+REMOTE_VERSION="1.4.2"
 
 # ------------------------------------------------------------------------------
 # Remote options
@@ -400,6 +694,46 @@ YES=false
 MODE="optimize"
 PRESET="interactive"
 FLAGS_PROVIDED=false
+
+remote_usage() {
+    cat <<'EOF'
+Usage:
+  pikvm-optimizer-remote [options]
+
+Run modes:
+  --dry-run          Preview actions without persistent changes
+  --yes              Non-interactive mode; run selected flags/preset directly
+  --health-check     Run diagnostics only
+  --uninstall        Open uninstall/cleanup menu
+  --restore          Restore /etc/kvmd/override.yaml from backup
+
+Presets:
+  --recommended      Select recommended modules
+  --all              Select all safe modules; excludes secret/login modules
+  --none             Select no modules
+
+Install/update:
+  --install          Copy this remote optimizer to /usr/local/sbin/pikvm-optimizer
+                     Re-running --install with a newer launcher updates that copy.
+
+Wizard defaults:
+  --wifi-ssid SSID   Prefill WiFi client SSID; password is still prompted
+  --wifi-country CC  Prefill WiFi country code
+  --wifi-ap-ssid SSID Prefill fallback AP SSID
+
+Use the local launcher help for connection options and examples:
+  ./pikvm_optimizer.sh --help
+EOF
+}
+
+require_remote_arg() {
+    local opt="$1"
+    local val="${2:-}"
+    if [ -z "$val" ] || [ "${val#-}" != "$val" ]; then
+        printf "Remote option error: %s requires a value\n" "$opt" >&2
+        exit 1
+    fi
+}
 
 RUN_CORE=true
 RUN_MTU=false
@@ -454,6 +788,9 @@ EDID_FILE=""
 PUBKEY_CONTENT=""
 SUDO_USER=""
 REBOOT=false
+WIFI_SSID=""
+WIFI_COUNTRY=""
+WIFI_AP_SSID=""
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -690,19 +1027,38 @@ while [ "$#" -gt 0 ]; do
             shift
             ;;
         --edid-url)
+            require_remote_arg "$1" "${2:-}"
             EDID_URL="${2:-}"
             shift 2
             ;;
         --edid-file)
+            require_remote_arg "$1" "${2:-}"
             EDID_FILE="${2:-}"
             shift 2
             ;;
         --pubkey-content)
+            require_remote_arg "$1" "${2:-}"
             PUBKEY_CONTENT="${2:-}"
             shift 2
             ;;
         --sudo-user)
+            require_remote_arg "$1" "${2:-}"
             SUDO_USER="${2:-}"
+            shift 2
+            ;;
+        --wifi-ssid)
+            require_remote_arg "$1" "${2:-}"
+            WIFI_SSID="${2:-}"
+            shift 2
+            ;;
+        --wifi-country)
+            require_remote_arg "$1" "${2:-}"
+            WIFI_COUNTRY="${2:-}"
+            shift 2
+            ;;
+        --wifi-ap-ssid)
+            require_remote_arg "$1" "${2:-}"
+            WIFI_AP_SSID="${2:-}"
             shift 2
             ;;
         --no-color)
@@ -712,6 +1068,14 @@ while [ "$#" -gt 0 ]; do
         --reboot)
             REBOOT=true
             shift
+            ;;
+        -V|--version)
+            printf "PiKVM Optimizer remote v%s\n" "$REMOTE_VERSION"
+            exit 0
+            ;;
+        -h|--help)
+            remote_usage
+            exit 0
             ;;
         *)
             printf "Unknown remote option: %s\n" "$1"
@@ -724,17 +1088,17 @@ done
 # Remote UI / constants
 # ------------------------------------------------------------------------------
 
-R="\033[31m"
-G="\033[32m"
-Y="\033[33m"
-C="\033[36m"
-W="\033[37m"
-BOLD="\033[1m"
-DIM="\033[2m"
-RESET="\033[0m"
-CLEAR="\033[2J\033[H"
-HIDE_CURSOR="\033[?25l"
-SHOW_CURSOR="\033[?25h"
+R=$'\033[31m'
+G=$'\033[32m'
+Y=$'\033[33m'
+C=$'\033[36m'
+W=$'\033[37m'
+BOLD=$'\033[1m'
+DIM=$'\033[2m'
+RESET=$'\033[0m'
+CLEAR=$'\033[2J\033[H'
+HIDE_CURSOR=$'\033[?25l'
+SHOW_CURSOR=$'\033[?25h'
 
 if [ "${TERM:-}" = "dumb" ] || [ "${NO_COLOR:-false}" = "true" ]; then
     R=""
@@ -751,7 +1115,14 @@ if [ "${TERM:-}" = "dumb" ] || [ "${NO_COLOR:-false}" = "true" ]; then
 fi
 
 CONFIG_FILE="/etc/kvmd/override.yaml"
-LOG_FILE="/root/pikvm-optimizer.log"
+# Pick first writable path for the log file
+LOG_FILE=""
+for _try in "/root/pikvm-optimizer.log" "/var/log/pikvm-optimizer.log" "/tmp/pikvm-optimizer.log"; do
+    if touch "$_try" 2>/dev/null; then
+        LOG_FILE="$_try"
+        break
+    fi
+done
 INSTALL_PATH="/usr/local/sbin/pikvm-optimizer"
 
 BACKUP_FILE=""
@@ -787,6 +1158,14 @@ MSD_STORAGE_CHANGED=false
 MSD_DRIVES_CHANGED=false
 OVERRIDE_D_CHANGED=false
 
+# Irreversible module tracking (for rollback summary)
+ROOT_PASSWORD_EXECUTED=false
+ADMIN_PASSWORD_EXECUTED=false
+TFA_EXECUTED=false
+TAILSCALE_SETUP_EXECUTED=false
+WIFI_EXECUTED=false
+TAILSCALE_CRASH_FIX_EXECUTED=false
+
 # ------------------------------------------------------------------------------
 # Remote UI helpers
 # ------------------------------------------------------------------------------
@@ -798,28 +1177,96 @@ else
     TL="+" TR="+" BL="+" BR="+" H="-" V="|" SL="+" SR="+"
 fi
 
-BOX_W=76  # inner content width (80 total: 2 padding + 76 content + 2 padding)
+BOX_W=76  # inner content width (80 total: 2 borders + 2 spaces + 76 content)
 
-__top_border=$(printf "%s%*s%s" "$TL" "$BOX_W" "" "$TR" | tr ' ' "$H")
-__bot_border=$(printf "%s%*s%s" "$BL" "$BOX_W" "" "$BR" | tr ' ' "$H")
-__sep_border=$(printf "%s%*s%s" "$SL" "$BOX_W" "" "$SR" | tr ' ' "$H")
+# Terminal detection and centering
+TERM_W="${COLUMNS:-$(tput cols 2>/dev/null || echo 80)}"
+BOX_TOTAL=80
+if [ "$TERM_W" -gt "$BOX_TOTAL" ]; then
+    BOX_LEFT=$(( (TERM_W - BOX_TOTAL) / 2 ))
+else
+    BOX_LEFT=0
+fi
 
-box_top()    { printf "%b%s%b\n" "${C}${BOLD}" "$__top_border" "$RESET"; }
-box_bottom() { printf "%b%s%b\n" "${C}${BOLD}" "$__bot_border" "$RESET"; }
-box_sep()    { printf "%b%s%b\n" "${C}${BOLD}" "$__sep_border" "$RESET"; }
+repeat_text() {
+    local text="$1"
+    local count="$2"
+    local out=""
+    local i
+    for ((i = 0; i < count; i++)); do
+        out+="$text"
+    done
+    printf "%s" "$out"
+}
+
+__top_border="${TL}$(repeat_text "$H" "$((BOX_W + 2))")${TR}"
+__bot_border="${BL}$(repeat_text "$H" "$((BOX_W + 2))")${BR}"
+__sep_border="${SL}$(repeat_text "$H" "$((BOX_W + 2))")${SR}"
+
+# Extract first N visible characters from an ANSI-colored string
+# (skips ANSI escape sequences without counting them toward N)
+ansi_take() {
+    local str="$1" count="$2"
+    local result="" vi=0 si=0 c
+    while [ $vi -lt "$count" ] && [ $si -lt ${#str} ]; do
+        c="${str:$si:1}"
+        if [[ "$c" == $'\x1b' ]]; then
+            result+="$c"; si=$((si + 1))
+            # Copy rest of escape sequence up to 'm'
+            while [ $si -lt ${#str} ] && [[ "${str:$si:1}" != 'm' ]]; do
+                result+="${str:$si:1}"; si=$((si + 1))
+            done
+            if [ $si -lt ${#str} ]; then
+                result+="m"; si=$((si + 1))
+            fi
+        else
+            [ $vi -ge 0 ] && result+="$c"
+            vi=$((vi + 1)); si=$((si + 1))
+        fi
+    done
+    printf "%s" "$result"
+}
+
+box_prefix() { printf "%*s" "$BOX_LEFT" ""; }
+
+box_top()    { box_prefix; printf "%b%s%b\n" "${C}${BOLD}" "$__top_border" "$RESET"; }
+box_bottom() { box_prefix; printf "%b%s%b\n" "${C}${BOLD}" "$__bot_border" "$RESET"; }
+box_sep()    { box_prefix; printf "%b%s%b\n" "${C}${BOLD}" "$__sep_border" "$RESET"; }
 
 box_line() {
     local text="${1:-}"
-    local plain pad
+    local plain pad line ansi_indent
     plain=$(printf "%s" "$text" | sed 's/\x1b\[[0-9;]*m//g')
-    pad=$((BOX_W - ${#plain}))
-    if [ "$pad" -lt 0 ]; then
-        local visible
-        visible=$(printf "%s" "$text" | sed 's/\x1b\[[0-9;]*m//g' | head -c "$BOX_W")
-        printf "%b%s %s %s%b\n" "${C}${BOLD}" "$V" "$visible" "$V" "$RESET"
-    else
-        printf "%b%s %s%*s %s%b\n" "${C}${BOLD}" "$V" "$text" "$pad" "" "$V" "$RESET"
+
+    if [ ${#plain} -le $BOX_W ]; then
+        # Fits in one line
+        pad=$((BOX_W - ${#plain}))
+        box_prefix; printf "%b%s %s%*s %s%b\n" "${C}${BOLD}" "$V" "$text" "$pad" "" "$V" "$RESET"
+        return
     fi
+
+    # Text too long — word-wrap.  Determine continuation indent from tag.
+    local indent=0
+    if [[ "$text" =~ \[([A-Z]+)\] ]]; then
+        indent=$(( ${#BASH_REMATCH[0]} + 1 ))
+    fi
+    local cont_w=$((BOX_W - indent))
+
+    local first=true
+    while IFS= read -r line; do
+        if [ "$first" = true ]; then
+            # First line: preserve ANSI codes from original
+            ansi_indent=$(ansi_take "$text" ${#line})
+            pad=$((BOX_W - ${#line}))
+            box_prefix; printf "%b%s %s%*s %s%b\n" "${C}${BOLD}" "$V" "$ansi_indent" "$pad" "" "$V" "$RESET"
+            first=false
+        else
+            # Continuation line: indented under the tag, no color needed
+            pad=$((cont_w - ${#line}))
+            [ "$pad" -lt 0 ] && pad=0
+            box_prefix; printf "%b%s %*s%s%*s %s%b\n" "${C}${BOLD}" "$V" "$indent" "" "$line" "$pad" "" "$V" "$RESET"
+        fi
+    done < <(printf "%s\n" "$plain" | fold -s -w "$BOX_W")
 }
 
 draw() {
@@ -864,9 +1311,9 @@ log_msg() {
         return 0
     fi
 
-    {
-        printf "[%s] [%s] %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$level" "$msg"
-    } >> "$LOG_FILE" 2>/dev/null || true
+    if [ -n "$LOG_FILE" ]; then
+        printf "[%s] [%s] %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$level" "$msg" >> "$LOG_FILE" 2>/dev/null || true
+    fi
 }
 
 yn_marker() {
@@ -1061,33 +1508,87 @@ rollback_changes() {
         if [ -n "$INSTALL_BACKUP_FILE" ] && [ -f "$INSTALL_BACKUP_FILE" ]; then
             cp "$INSTALL_BACKUP_FILE" "$INSTALL_PATH" || true
             chmod 755 "$INSTALL_PATH" || true
-            warn "Restored previous permanent optimizer install."
+            warn "Restored previous on-device optimizer command."
         else
             rm -f "$INSTALL_PATH"
-            warn "Removed permanent optimizer install from this run."
+            warn "Removed on-device optimizer command from this run."
         fi
     fi
+
+    # --- Rollback summary ---
+    local reverted="" left="" sep=""
+    $CONFIG_CHANGED &&       { reverted+="${sep}KVMD override config"; sep=", "; }
+    $FAN_CHANGED &&          { reverted+="${sep}fan curve"; sep=", "; }
+    $WATCHDOG_CHANGED &&     { reverted+="${sep}Tailscale watchdog"; sep=", "; }
+    $MTU_CHANGED &&          { reverted+="${sep}Tailscale MTU"; sep=", "; }
+    $EDID_CHANGED &&         { reverted+="${sep}HDMI EDID"; sep=", "; }
+    $KEEPALIVE_CHANGED &&    { reverted+="${sep}TCP keepalive"; sep=", "; }
+    $QUALITY_CAP_CHANGED &&  { reverted+="${sep}VNC quality cap"; sep=", "; }
+    $MSD_BIOS_FIX_CHANGED && { reverted+="${sep}MSD BIOS fix"; sep=", "; }
+    $USB_PRESET_CHANGED &&   { reverted+="${sep}USB device preset"; sep=", "; }
+    $USB_EXTRA_CHANGED &&    { reverted+="${sep}USB extras"; sep=", "; }
+    $MSD_STORAGE_CHANGED &&  { reverted+="${sep}MSD network storage"; sep=", "; }
+    $MSD_DRIVES_CHANGED &&   { reverted+="${sep}MSD drives"; sep=", "; }
+    $OVERRIDE_D_CHANGED &&   { reverted+="${sep}override.d directory"; sep=", "; }
+    $SSL_CHANGED &&          { reverted+="${sep}SSL certs"; sep=", "; }
+    $KEY_CHANGED &&          { reverted+="${sep}SSH public key"; sep=", "; }
+    $SUDOERS_CHANGED &&      { reverted+="${sep}sudoers rule"; sep=", "; }
+    $INSTALL_CHANGED &&      { reverted+="${sep}on-device optimizer command"; sep=", "; }
+
+    sep=""
+    $ROOT_PASSWORD_EXECUTED &&       { left+="${sep}root password change"; sep=", "; }
+    $ADMIN_PASSWORD_EXECUTED &&      { left+="${sep}Web/KVM admin password change"; sep=", "; }
+    $TFA_EXECUTED &&                 { left+="${sep}TOTP 2FA setup"; sep=", "; }
+    $TAILSCALE_SETUP_EXECUTED &&     { left+="${sep}Tailscale install/registration"; sep=", "; }
+    $WIFI_EXECUTED &&                { left+="${sep}WiFi configuration"; sep=", "; }
+    $TAILSCALE_CRASH_FIX_EXECUTED && { left+="${sep}Tailscale crash fix"; sep=", "; }
+
+    box_sep
+    if [ -n "$reverted" ]; then
+        box_line "${G}Reverted:${RESET} $reverted"
+    else
+        box_line "Reverted: (none)"
+    fi
+    if [ -n "$left" ]; then
+        box_line "${Y}Left in place (cannot be undone):${RESET} $left"
+    fi
+    box_line "Manual cleanup may be needed for the items listed above."
 }
 
 cleanup_remote() {
     local rc=$?
-    local script_dir
-    script_dir="$(cd "$(dirname "$0")" && pwd)"
 
     if [ "$SUCCESS" != true ] && [ "$rc" -ne 0 ]; then
         rollback_changes
     fi
 
     make_ro
-    rm -rf "$script_dir" 2>/dev/null || true
+    if [ -n "${RUNTIME_DIR:-}" ]; then
+        rm -rf -- "$RUNTIME_DIR" 2>/dev/null || true
+    fi
+    if [ "${REMOVE_SCRIPT_DIR_ON_EXIT:-false}" = true ] && [ -n "${REMOTE_SCRIPT_DIR:-}" ]; then
+        rm -rf -- "$REMOTE_SCRIPT_DIR" 2>/dev/null || true
+    fi
     printf "%b" "$SHOW_CURSOR"
     exit "$rc"
 }
 
 cancel_remote() {
-    warn "Cancellation requested. Attempting rollback..."
+    box_sep
+    warn "Cancellation requested. Rolling back reversible changes this run made..."
+    box_line "${Y}Note:${RESET} password changes, Tailscale registration, 2FA, and WiFi config"
+    box_line "      are irreversible and will be reported at the end."
+    trap - INT TERM          # keep EXIT trap so cleanup_remote runs the rollback
+    SUCCESS=false
     exit 130
 }
+
+REMOTE_SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REMOVE_SCRIPT_DIR_ON_EXIT=false
+case "$REMOTE_SCRIPT_DIR" in
+    /tmp/pikvm-optimizer.*) REMOVE_SCRIPT_DIR_ON_EXIT=true ;;
+esac
+RUNTIME_DIR="$(mktemp -d /tmp/pikvm-optimizer-runtime.XXXXXXXXXX)"
 
 trap cancel_remote INT TERM
 trap cleanup_remote EXIT
@@ -1100,7 +1601,7 @@ require_command() {
     local cmd="$1"
 
     if ! command -v "$cmd" >/dev/null 2>&1; then
-        err "Missing required command: $cmd"
+        err "Missing required command: $cmd. Install it or check your PATH."
         exit 1
     fi
 }
@@ -1123,7 +1624,7 @@ restart_service_if_exists() {
         if ! systemctl restart "$svc" >/dev/null 2>&1; then
             warn "Could not restart $svc."
             if [ "$fatal" = true ]; then
-                err "Fatal: service restart failed for $svc"
+                err "Service restart failed for $svc; check \`systemctl status $svc\`."
                 return 1
             fi
         fi
@@ -1151,7 +1652,9 @@ validate_kvmd_config() {
     local file="$1"
 
     if command -v kvmd >/dev/null 2>&1; then
-        kvmd -M --config="$file" >/dev/null 2>&1
+        # kvmd --override-config requires the override.d directory to exist
+        mkdir -p /etc/kvmd/override.d
+        kvmd -M --override-config="$file" >/dev/null 2>&1
         return $?
     fi
 
@@ -1187,9 +1690,7 @@ config_is_empty_or_trivial() {
 }
 
 write_yaml_merge_helper() {
-    local script_dir
-    script_dir="$(cd "$(dirname "$0")" && pwd)"
-    local helper="${script_dir}/pikvm-yaml-merge.py"
+    local helper="${RUNTIME_DIR}/pikvm-yaml-merge.py"
 
     cat > "$helper" <<'PY'
 #!/usr/bin/env python3
@@ -1240,9 +1741,7 @@ PY
 }
 
 write_yaml_delete_helper() {
-    local script_dir
-    script_dir="$(cd "$(dirname "$0")" && pwd)"
-    local helper="${script_dir}/pikvm-yaml-delete.py"
+    local helper="${RUNTIME_DIR}/pikvm-yaml-delete.py"
 
     cat > "$helper" <<'PY'
 #!/usr/bin/env python3
@@ -1318,7 +1817,7 @@ print_patch_for_manual_merge() {
 
     box_line ""
     box_line "After manual merge, run:"
-    box_line "  kvmd -M --config=$CONFIG_FILE"
+    box_line "  kvmd -M --override-config=$CONFIG_FILE"
     box_line "  systemctl restart kvmd"
 }
 
@@ -1345,9 +1844,7 @@ manual_yaml_fallback() {
 
 fallback_write_clean_config() {
     local patch_file="$1"
-    local script_dir
-    script_dir="$(cd "$(dirname "$0")" && pwd)"
-    local work_file="${script_dir}/pikvm-optimizer.clean.yaml"
+    local work_file="${RUNTIME_DIR}/pikvm-optimizer.clean.yaml"
 
     cp "$patch_file" "$work_file"
 
@@ -1365,16 +1862,17 @@ fallback_write_clean_config() {
         CONFIG_CHANGED=true
         ok "PyYAML missing, but config was empty/trivial; wrote clean override.yaml."
     else
-        err "Fallback clean config failed kvmd validation; config not changed."
+        err "Fallback clean config not accepted by 'kvmd -M'."
+        box_line "This module's settings cannot be applied without Python YAML support."
+        box_line "Install PyYAML on the PiKVM (python3 -m pip install pyyaml) then rerun,"
+        box_line "or merge the patch manually (see saved patch path above)."
         return 1
     fi
 }
 
 merge_yaml_patch() {
     local patch_file="$1"
-    local script_dir
-    script_dir="$(cd "$(dirname "$0")" && pwd)"
-    local work_file="${script_dir}/pikvm-optimizer.merged.yaml"
+    local work_file="${RUNTIME_DIR}/pikvm-optimizer.merged.yaml"
 
     if python_yaml_available; then
         write_yaml_merge_helper
@@ -1418,7 +1916,9 @@ with open('$work_file', 'w') as f:
                     ok "Replaced malformed config with clean config containing module settings."
                     return 0
                 else
-                    err "Generated config fails validation; not replacing."
+                    err "Generated config not accepted by 'kvmd -M'; not replacing."
+                    box_line "This can happen if the module's config keys differ from what your PiKVM version"
+                    box_line "expects. Backup preserved; other modules may still work."
                     return 1
                 fi
             fi
@@ -1462,7 +1962,7 @@ with open('$work_file', 'w') as f:
             fi
         fi
 
-        python3 "${script_dir}/pikvm-yaml-merge.py" "$CONFIG_FILE" "$patch_file" "$work_file"
+        python3 "${RUNTIME_DIR}/pikvm-yaml-merge.py" "$CONFIG_FILE" "$patch_file" "$work_file"
 
         if validate_kvmd_config "$work_file"; then
             if [ "$DRY_RUN" = true ]; then
@@ -1477,9 +1977,12 @@ with open('$work_file', 'w') as f:
             CONFIG_CHANGED=true
             ok "Validated and applied config update."
         else
-            err "kvmd validation failed; config not changed."
-            if [ -n "$BACKUP_FILE" ]; then
-                warn "Backup remains available: $BACKUP_FILE"
+            err "kvmd validation failed; config not changed for this module."
+            [ -n "$BACKUP_FILE" ] && warn "Backup remains available: $BACKUP_FILE"
+            if [ "$DRY_RUN" = false ]; then
+                warn "The generated config did not pass 'kvmd -M' validation."
+                warn "This can happen if the module's config keys are not supported by your PiKVM version."
+                warn "Other modules may still succeed; check the backup and rerun with --health-check."
             fi
             return 1
         fi
@@ -1497,9 +2000,7 @@ with open('$work_file', 'w') as f:
 }
 
 delete_yaml_paths() {
-    local script_dir
-    script_dir="$(cd "$(dirname "$0")" && pwd)"
-    local work_file="${script_dir}/pikvm-optimizer.deleted.yaml"
+    local work_file="${RUNTIME_DIR}/pikvm-optimizer.deleted.yaml"
 
     if ! python_yaml_available; then
         warn "Python YAML module missing; cannot safely remove YAML keys."
@@ -1508,7 +2009,7 @@ delete_yaml_paths() {
     fi
 
     write_yaml_delete_helper
-    python3 "${script_dir}/pikvm-yaml-delete.py" "$CONFIG_FILE" "$work_file" "$@"
+    python3 "${RUNTIME_DIR}/pikvm-yaml-delete.py" "$CONFIG_FILE" "$work_file" "$@"
 
     if validate_kvmd_config "$work_file"; then
         if [ "$DRY_RUN" = true ]; then
@@ -1556,6 +2057,7 @@ backup_config() {
 # ------------------------------------------------------------------------------
 
 apply_recommended_preset() {
+    printf "Selected recommended preset.\n"
     RUN_CORE=true
     RUN_MTU=false
     RUN_EDID=false
@@ -1583,6 +2085,7 @@ apply_recommended_preset() {
 }
 
 apply_all_preset() {
+    printf "Selected all safe modules preset.\n"
     RUN_CORE=true
     RUN_MTU=true
     RUN_EDID=true
@@ -1610,6 +2113,7 @@ apply_all_preset() {
 }
 
 apply_none_preset() {
+    printf "Cleared all module selections.\n"
     RUN_CORE=false
     RUN_MTU=false
     RUN_EDID=false
@@ -1652,7 +2156,7 @@ interactive_module_menu() {
         box_line "[5] [$(yn_marker "$RUN_FAN")] Fan curve"
         box_line "[6] [$(yn_marker "$RUN_WATCHDOG")] Tailscale watchdog"
         box_line "[7] [$(yn_marker "$RUN_KEY")] Install SSH public key"
-        box_line "[8] [$(yn_marker "$RUN_INSTALL")] Install optimizer permanently"
+        box_line "[8] [$(yn_marker "$RUN_INSTALL")] Install/update on-device optimizer command"
         box_line "[9] [$(yn_marker "$RUN_QUALITY_CAP")] VNC JPEG quality cap (Screens fix)"
         box_line "[0] [$(yn_marker "$RUN_KEEPALIVE")] TCP keepalive tuning (Tailscale)"
         box_line ""
@@ -1672,16 +2176,11 @@ interactive_module_menu() {
         box_line ""
         close_box
 
-        printf "Selection: "
+        box_prefix; printf "Enter letter/number to toggle, or press Enter to proceed: "
         read -r choice
 
         case "$choice" in
             "")
-                # if [ "$RUN_SUDO" = true ] && [ "$RUN_INSTALL" != true ]; then
-                #     RUN_INSTALL=true
-                #     warn "Restricted sudo requires permanent install; install module enabled."
-                #     sleep 1
-                # fi
                 return 0
                 ;;
             1) toggle_bool RUN_CORE ;;
@@ -1749,7 +2248,7 @@ interactive_uninstall_menu() {
         box_line "[5] [$(yn_marker "$UN_FAN")] Restore latest fan backup if available"
         box_line "[6] [$(yn_marker "$UN_WATCHDOG")] Remove Tailscale watchdog"
         box_line "[7] [$(yn_marker "$UN_KEY")] Remove SSH public key from authorized_keys"
-        box_line "[8] [$(yn_marker "$UN_INSTALL")] Remove permanent optimizer install"
+        box_line "[8] [$(yn_marker "$UN_INSTALL")] Remove on-device optimizer command"
         box_line "[9] [$(yn_marker "$UN_QUALITY_CAP")] Restore VNC server.py from backup"
         box_line "[0] [$(yn_marker "$UN_KEEPALIVE")] Remove TCP keepalive sysctl config"
         box_line ""
@@ -1765,7 +2264,7 @@ interactive_uninstall_menu() {
         box_line ""
         close_box
 
-        printf "Selection: "
+        box_prefix; printf "Selection: "
         read -r choice
 
         case "$choice" in
@@ -1880,12 +2379,13 @@ EOF
 }
 
 apply_tailscale_mtu() {
-    info "Configuring Tailscale MTU..."
-
     if ! command -v tailscale >/dev/null 2>&1; then
-        warn "Tailscale not installed; skipped MTU."
+        warn "Tailscale not installed; skipped MTU tuning."
+        box_line "Run the Tailscale setup module (--tailscale-setup) first, then rerun this."
         return 0
     fi
+
+    info "Configuring Tailscale MTU..."
 
     if [ "$DRY_RUN" = true ]; then
         ok "DRY RUN: would write /etc/systemd/network/99-tailscale-mtu.link."
@@ -1934,8 +2434,8 @@ apply_tailscale_setup() {
     if ! command -v tailscale >/dev/null 2>&1; then
         if command -v pacman >/dev/null 2>&1; then
             info "Installing tailscale package..."
-            if ! pacman -S --needed --noconfirm tailscale >/dev/null 2>&1; then
-                warn "Could not install tailscale with pacman. Check package mirrors/network and rerun."
+            if ! pacman -S --needed --noconfirm tailscale-pikvm >/dev/null 2>&1; then
+                warn "Could not install tailscale-pikvm with pacman. Check package mirrors/network and rerun."
                 return 0
             fi
         else
@@ -1948,11 +2448,13 @@ apply_tailscale_setup() {
 
     if tailscale status >/dev/null 2>&1; then
         ok "Tailscale is already authenticated and running."
+        TAILSCALE_SETUP_EXECUTED=true
         return 0
     fi
 
     if [ "$YES" = true ]; then
         warn "Tailscale installed/started, but login requires an interactive auth URL."
+        TAILSCALE_SETUP_EXECUTED=true
         box_line "Run later: tailscale up"
         return 0
     fi
@@ -1960,6 +2462,7 @@ apply_tailscale_setup() {
     box_line "Tailscale will print a login URL. Open it, authenticate, then return here."
     if tailscale up; then
         ok "Tailscale login completed."
+        TAILSCALE_SETUP_EXECUTED=true
     else
         warn "tailscale up did not complete. You can rerun: tailscale up"
     fi
@@ -2085,7 +2588,8 @@ PIKVM_EDID_HEX
         edid_tmp="$(mktemp /tmp/pikvm-edid.XXXXXXXXXX)"
 
         if ! curl -fsSL --max-time 30 --max-filesize 1048576 -o "$edid_tmp" "$edid_source"; then
-            warn "Failed to download EDID."
+            warn "Failed to download EDID from $edid_source."
+            warn "Check the URL is reachable from the PiKVM and that HTTPS is permitted."
             rm -f "$edid_tmp"
             return 0
         fi
@@ -2198,17 +2702,19 @@ EOF
 }
 
 apply_tailscale_ssl() {
-    info "Configuring Tailscale SSL certificate..."
-
     if ! command -v tailscale >/dev/null 2>&1; then
-        warn "Tailscale not installed; skipped SSL."
+        warn "Tailscale not installed; skipped SSL certificate deploy."
+        box_line "Run the Tailscale setup module (--tailscale-setup) first, then rerun this."
         return 0
     fi
 
     if ! tailscale status >/dev/null 2>&1; then
         warn "Tailscale not running/authenticated; skipped SSL."
+        box_line "Run 'tailscale up' on the PiKVM to authenticate, then rerun."
         return 0
     fi
+
+    info "Configuring Tailscale SSL certificate..."
 
     local ts_dns=""
     ts_dns="$(tailscale status --json 2>/dev/null | awk -F'"' '/"DNSName":/ { print $4; exit }' || true)"
@@ -2294,12 +2800,13 @@ enable_oled_if_present() {
 }
 
 apply_tailscale_watchdog() {
-    info "Installing Tailscale watchdog..."
-
     if ! command -v tailscale >/dev/null 2>&1; then
-        warn "Tailscale not installed; skipped watchdog."
+        warn "Tailscale not installed; skipped watchdog install."
+        box_line "Run the Tailscale setup module (--tailscale-setup) first, then rerun this."
         return 0
     fi
+
+    info "Installing Tailscale watchdog..."
 
     if [ "$DRY_RUN" = true ]; then
         ok "DRY RUN: would install /usr/local/bin/pikvm-tailscale-watchdog.sh."
@@ -2460,11 +2967,13 @@ apply_ssh_key() {
     fi
 }
 
-install_optimizer_permanently() {
-    info "Installing optimizer permanently..."
+install_on_device_optimizer() {
+    info "Installing/updating on-device optimizer command..."
+    info "This copies the current remote optimizer to $INSTALL_PATH."
+    info "Run '$INSTALL_PATH --version' on the PiKVM to check the installed version."
 
     if [ "$DRY_RUN" = true ]; then
-        ok "DRY RUN: would install current remote optimizer to $INSTALL_PATH."
+        ok "DRY RUN: would install/update current remote optimizer at $INSTALL_PATH."
         return 0
     fi
 
@@ -2474,15 +2983,26 @@ install_optimizer_permanently() {
     if [ -f "$INSTALL_PATH" ]; then
         INSTALL_BACKUP_FILE="${INSTALL_PATH}.bak.$(date +%Y%m%d-%H%M%S)"
         cp "$INSTALL_PATH" "$INSTALL_BACKUP_FILE"
+        local installed_version
+        installed_version="$($INSTALL_PATH --version 2>/dev/null || true)"
+        if [ -n "$installed_version" ]; then
+            info "Existing on-device optimizer: $installed_version"
+        else
+            info "Existing on-device optimizer found; version unknown."
+        fi
     fi
 
     cp "$0" "$INSTALL_PATH"
     chmod 755 "$INSTALL_PATH"
     INSTALL_CHANGED=true
 
-    ok "Optimizer installed permanently at $INSTALL_PATH."
+    ok "On-device optimizer installed at $INSTALL_PATH (v$REMOTE_VERSION)."
+    info "Update by running the launcher again with --install; uninstall from the cleanup menu."
 }
 
+# DISABLED: apply_restricted_sudo() is fully implemented and tested but intentionally
+# disabled because restricted NOPASSWD sudo introduces a security concern that needs
+# careful user review before activation. The function is preserved for future use.
 apply_restricted_sudo() {
     info "Configuring restricted passwordless sudo..."
 
@@ -2514,7 +3034,7 @@ apply_restricted_sudo() {
     fi
 
     if [ ! -f "$INSTALL_PATH" ] && [ "$RUN_INSTALL" != true ]; then
-        warn "Permanent optimizer install not found; sudoers rule skipped."
+        warn "On-device optimizer install not found; sudoers rule skipped."
         return 0
     fi
 
@@ -2651,12 +3171,13 @@ detect_arch() {
 }
 
 apply_tailscale_crash_fix() {
-    info "Checking Tailscale crash fix requirements..."
-
     if ! command -v tailscale >/dev/null 2>&1; then
         warn "Tailscale not installed; skipped crash fix."
+        box_line "Run the Tailscale setup module (--tailscale-setup) first, then rerun this."
         return 0
     fi
+
+    info "Applying 32-bit ARM Tailscale crash mitigations..."
 
     local arch
     arch="$(detect_arch)"
@@ -2736,6 +3257,7 @@ EOF
     fi
 
     ok "Tailscale crash fix applied."
+    TAILSCALE_CRASH_FIX_EXECUTED=true
     warn "This is a mitigation, not a fix. The gVisor alignment bug is unfixable on 32-bit ARM."
     warn "Long-term: migrate to a 64-bit OS (aarch64) to eliminate this issue entirely."
 }
@@ -2838,17 +3360,23 @@ apply_wifi() {
         simultaneous=true
     fi
 
-    local client_ssid=""
+    local client_ssid="$WIFI_SSID"
     local client_pass=""
-    local country="US"
+    local country="${WIFI_COUNTRY:-US}"
     local ap_ssid="PiKVM-${HOSTNAME:-pikvm}"
     local ap_pass
     local ap_ssid_input=""
     local ap_pass_input=""
     ap_pass="$(generate_wifi_password)"
+    ap_ssid="${WIFI_AP_SSID:-$ap_ssid}"
 
     if [ "$YES" = true ]; then
-        warn "Non-interactive WiFi setup: client WiFi skipped; AP fallback will be configured."
+        if [ -n "$client_ssid" ]; then
+            warn "Non-interactive WiFi setup cannot read the password for '$client_ssid'; client WiFi skipped."
+            client_ssid=""
+        else
+            warn "Non-interactive WiFi setup: client WiFi skipped; AP fallback will be configured."
+        fi
         warn "Generated AP credentials will be shown once; save them now."
     else
         local scanned_ssids=()
@@ -2864,11 +3392,25 @@ apply_wifi() {
                 printf "  %d) %s\n" "$idx" "$scanned_ssid"
                 idx=$((idx + 1))
             done
-            printf "Choose network number, type SSID manually, or leave blank to skip client mode: "
+            if [ -n "$client_ssid" ]; then
+                printf "Choose network number, type SSID manually, Enter for '%s', or blank '-' to skip client mode: " "$client_ssid"
+            else
+                printf "Choose network number, type SSID manually, or leave blank to skip client mode: "
+            fi
         else
-            printf "\nNo WiFi networks detected on %s. Type SSID manually or leave blank to skip client mode: " "$client_iface"
+            if [ -n "$client_ssid" ]; then
+                printf "\nNo WiFi networks detected on %s. Type SSID manually, Enter for '%s', or blank '-' to skip client mode: " "$client_iface" "$client_ssid"
+            else
+                printf "\nNo WiFi networks detected on %s. Type SSID manually or leave blank to skip client mode: " "$client_iface"
+            fi
         fi
-        read -r client_ssid
+        local client_ssid_input=""
+        read -r client_ssid_input
+        if [ "$client_ssid_input" = "-" ]; then
+            client_ssid=""
+        elif [ -n "$client_ssid_input" ]; then
+            client_ssid="$client_ssid_input"
+        fi
         if [ -n "$client_ssid" ] && printf "%s" "$client_ssid" | grep -qE '^[0-9]+$'; then
             local selected_index=$((client_ssid - 1))
             if [ "$selected_index" -ge 0 ] && [ "$selected_index" -lt "${#scanned_ssids[@]}" ]; then
@@ -2877,16 +3419,17 @@ apply_wifi() {
         fi
         if [ -n "$client_ssid" ]; then
             printf "Selected WiFi SSID: %s\n" "$client_ssid"
-            printf "WiFi client password: "
+            printf "WiFi client password (min 8 chars; blank skips client WiFi): "
             stty -echo 2>/dev/null || true
             read -r client_pass
             stty echo 2>/dev/null || true
             printf "\n"
         fi
-        printf "Country code [US]: "
-        read -r country
-        country="${country:-US}"
-        printf "Fallback AP SSID [$ap_ssid]: "
+        printf "Country code [$country]: "
+        local country_input=""
+        read -r country_input
+        country="${country_input:-$country}"
+        printf "Fallback AP SSID (hotspot PiKVM creates when client WiFi is unavailable) [$ap_ssid]: "
         read -r ap_ssid_input
         ap_ssid="${ap_ssid_input:-$ap_ssid}"
         printf "Fallback AP password [generated]: "
@@ -3033,7 +3576,7 @@ else
     start_ap
 fi
 EOF
-    chmod +x /usr/local/bin/pikvm-wifi-auto.sh
+    chmod 700 /usr/local/bin/pikvm-wifi-auto.sh
 
     cat > /etc/systemd/system/pikvm-wifi-ap-dnsmasq.service <<EOF
 [Unit]
@@ -3081,6 +3624,7 @@ EOF
     systemctl start pikvm-wifi-auto.service >/dev/null 2>&1 || true
 
     ok "WiFi auto mode configured."
+    WIFI_EXECUTED=true
     box_line "Client iface: $client_iface"
     box_line "AP iface: $ap_iface"
     box_line "AP SSID: $ap_ssid"
@@ -3112,26 +3656,46 @@ apply_root_password() {
         return 0
     fi
     local pass1 pass2
-    printf "New root password: "
-    stty -echo 2>/dev/null || true
-    read -r pass1
-    stty echo 2>/dev/null || true
-    printf "\nConfirm root password: "
-    stty -echo 2>/dev/null || true
-    read -r pass2
-    stty echo 2>/dev/null || true
-    printf "\n"
-    if [ -z "$pass1" ] || [ "$pass1" != "$pass2" ]; then
-        warn "Passwords empty or mismatched; skipped root password change."
-        return 0
-    fi
+    local attempts=0
+    while [ "$attempts" -lt 3 ]; do
+        printf "New root password: "
+        stty -echo 2>/dev/null || true
+        read -r pass1
+        stty echo 2>/dev/null || true
+        printf "\n"
+        printf "Confirm root password: "
+        stty -echo 2>/dev/null || true
+        read -r pass2
+        stty echo 2>/dev/null || true
+        printf "\n"
+
+        if [ -z "$pass1" ]; then
+            warn "Password empty; skipped root password change."
+            return 0
+        fi
+        if [ "$pass1" = "$pass2" ]; then
+            break
+        fi
+        attempts=$((attempts + 1))
+        if [ "$attempts" -ge 3 ]; then
+            err "Passwords did not match after 3 attempts; root password not changed."
+            return 1
+        fi
+        warn "Passwords did not match. Try again (attempt $((attempts + 1))/3)."
+    done
     if [ "$DRY_RUN" = true ]; then
         ok "DRY RUN: would change root password."
         return 0
     fi
     make_rw
-    printf 'root:%s\n' "$pass1" | chpasswd
-    ok "Root password changed."
+    if printf 'root:%s\n' "$pass1" | chpasswd; then
+        ok "Root password changed."
+        ROOT_PASSWORD_EXECUTED=true
+    else
+        err "chpasswd reported failure; root password not changed."
+        warn "Ensure this script runs as root on the PiKVM and disk is not full."
+        return 1
+    fi
 }
 
 apply_first_run() {
@@ -3147,26 +3711,46 @@ apply_first_run() {
         return 0
     fi
     local pass1 pass2
-    printf "New Web/KVM admin password for user 'admin': "
-    stty -echo 2>/dev/null || true
-    read -r pass1
-    stty echo 2>/dev/null || true
-    printf "\nConfirm Web/KVM admin password: "
-    stty -echo 2>/dev/null || true
-    read -r pass2
-    stty echo 2>/dev/null || true
-    printf "\n"
-    if [ -z "$pass1" ] || [ "$pass1" != "$pass2" ]; then
-        warn "Passwords empty or mismatched; skipped Web UI password change."
-        return 0
-    fi
+    local attempts=0
+    while [ "$attempts" -lt 3 ]; do
+        printf "New Web/KVM admin password for user 'admin': "
+        stty -echo 2>/dev/null || true
+        read -r pass1
+        stty echo 2>/dev/null || true
+        printf "\n"
+        printf "Confirm Web/KVM admin password: "
+        stty -echo 2>/dev/null || true
+        read -r pass2
+        stty echo 2>/dev/null || true
+        printf "\n"
+
+        if [ -z "$pass1" ]; then
+            warn "Password empty; skipped Web UI password change."
+            return 0
+        fi
+        if [ "$pass1" = "$pass2" ]; then
+            break
+        fi
+        attempts=$((attempts + 1))
+        if [ "$attempts" -ge 3 ]; then
+            err "Passwords did not match after 3 attempts; Web UI password not changed."
+            return 1
+        fi
+        warn "Passwords did not match. Try again (attempt $((attempts + 1))/3)."
+    done
     if [ "$DRY_RUN" = true ]; then
         ok "DRY RUN: would change Web/KVM admin password."
         return 0
     fi
     make_rw
-    printf '%s\n%s\n' "$pass1" "$pass2" | kvmd-htpasswd set admin >/dev/null
-    ok "Web/KVM admin password changed."
+    if printf '%s\n%s\n' "$pass1" "$pass2" | kvmd-htpasswd set admin >/dev/null; then
+        ok "Web/KVM admin password changed."
+        ADMIN_PASSWORD_EXECUTED=true
+    else
+        err "kvmd-htpasswd reported failure; Web/KVM admin password not changed."
+        warn "Verify kvmd-htpasswd is functional: kvmd-htpasswd set admin"
+        return 1
+    fi
 }
 
 apply_2fa() {
@@ -3181,16 +3765,81 @@ apply_2fa() {
     fi
     make_rw
     mkdir -p /etc/kvmd/override.d
-    if kvmd-totp show >/tmp/pikvm-optimizer-totp.txt 2>/dev/null; then
+    local totp_tmp
+    totp_tmp="$(mktemp /tmp/pikvm-optimizer-totp.XXXXXXXXXX)"
+    chmod 600 "$totp_tmp"
+    local already_existing=false
+    if kvmd-totp show >"$totp_tmp" 2>/dev/null; then
         warn "2FA already configured; showing existing QR/secret."
+        already_existing=true
     else
-        kvmd-totp init >/tmp/pikvm-optimizer-totp.txt
-        ok "2FA initialized."
+        if kvmd-totp init >"$totp_tmp"; then
+            ok "2FA initialized."
+            TFA_EXECUTED=true
+        else
+            rm -f "$totp_tmp"
+            err "kvmd-totp init returned an error; 2FA not configured."
+            warn "Check that kvmd-totp is functional by running 'kvmd-totp init' directly on the PiKVM."
+            return 1
+        fi
     fi
+
+    # Extract secret for later verification
+    local secret
+    secret=$(grep '^Secret: ' "$totp_tmp" | sed 's/^Secret: //')
+
+    # Close the box section so the QR code renders without border corruption
+    # (QR block characters are double-width and break box_line's padding math)
+    box_sep
     while IFS= read -r line; do
-        box_line "$line"
-    done </tmp/pikvm-optimizer-totp.txt
-    rm -f /tmp/pikvm-optimizer-totp.txt
+        printf "%s\n" "$line"
+    done <"$totp_tmp"
+    printf "\n"
+    rm -f "$totp_tmp"
+
+    # Verify TOTP code for newly initialized secrets
+    if [ "$already_existing" = false ] && [ "$YES" = false ] && [ -n "$secret" ]; then
+        local attempts=0
+        while [ "$attempts" -lt 3 ]; do
+            printf "Enter a 6-digit code from your authenticator app to verify setup"
+            [ "$attempts" -gt 0 ] && printf " (attempt $((attempts + 1))/3)"
+            printf " [s=skip, d=disable]: "
+            read -r verify_code
+
+            case "$verify_code" in
+                s|S)
+                    warn "Verification skipped; you can retry with --2fa later."
+                    break
+                    ;;
+                d|D)
+                    make_rw
+                    kvmd-totp del >/dev/null 2>&1 || true
+                    warn "2FA disabled."
+                    return 0
+                    ;;
+            esac
+
+            if [ -n "$verify_code" ] && printf '%s' "$secret" | python3 -c "
+import pyotp, sys
+secret = sys.stdin.read().strip()
+code = sys.argv[1]
+sys.exit(0 if pyotp.TOTP(secret).verify(code) else 1)
+" "$verify_code" 2>/dev/null; then
+                box_line "${G}[OK]${RESET} TOTP code verified."
+                break
+            fi
+
+            attempts=$((attempts + 1))
+            if [ "$attempts" -ge 3 ]; then
+                err "Verification failed after 3 attempts."
+                warn "Run --2fa again to retry, or use 'kvmd-totp show' on the PiKVM."
+                return 1
+            fi
+            [ -z "$verify_code" ] && warn "No code entered." || warn "That code didn't work."
+            warn "Enter s to skip, d to disable, or try again:"
+        done
+    fi
+    box_sep
 }
 
 uninstall_2fa() {
@@ -3382,9 +4031,12 @@ apply_msd_storage() {
     printf "This permanently mounts an existing NFS/SMB share so PiKVM can browse ISOs from it.\n"
     printf "You need the storage server address/name and exported path/share now.\n"
     printf "If you have not created a network share yet, leave this blank and rerun --msd-storage later.\n\n"
-    printf "Protocol (nfs/smb) [nfs]: "
+    printf "Protocol (nfs/smb, blank to skip) [nfs]: "
     read -r proto
-    proto="${proto:-nfs}"
+    if [ -z "$proto" ]; then
+        warn "No protocol selected; skipping network storage."
+        return 0
+    fi
 
     case "$proto" in
         nfs|NFS)
@@ -3392,7 +4044,7 @@ apply_msd_storage() {
             printf "NFS server IP/hostname (e.g., 192.168.1.100 or nas.local; blank to skip): "
             read -r server
             [ -z "$server" ] && { warn "Server required; skipping."; return 0; }
-            printf "NFS export path on that server (e.g., /volume1/iso): "
+            printf "NFS export path on that server (e.g., /volume1/iso; blank to skip): "
             read -r export_path
             [ -z "$export_path" ] && { warn "Export path required; skipping."; return 0; }
             local mount_opts="soft,noatime,nofail"
@@ -3405,7 +4057,7 @@ apply_msd_storage() {
             printf "SMB server IP/hostname (e.g., 192.168.1.100 or nas.local; blank to skip): "
             read -r server
             [ -z "$server" ] && { warn "Server required; skipping."; return 0; }
-            printf "SMB share path on that server (e.g., /isos or /shares/iso): "
+            printf "SMB share path on that server (e.g., /isos or /shares/iso; blank to skip): "
             read -r export_path
             [ -z "$export_path" ] && { warn "Share path required; skipping."; return 0; }
             printf "SMB username [guest]: "
@@ -3451,16 +4103,18 @@ apply_msd_storage() {
 
     mkdir -p "$mount_point"
 
-    if grep -q "$mount_point" /etc/fstab 2>/dev/null; then
+    local fstab_marker="# pikvm-optimizer-msd-storage"
+
+    if grep -qF -- " $mount_point " /etc/fstab 2>/dev/null; then
         warn "Mount point $mount_point already in fstab; not duplicating."
     else
         if [ -f /etc/fstab ]; then
             cp /etc/fstab /etc/fstab.bak.$(date +%Y%m%d-%H%M%S)
         fi
         if [ "$proto" = "nfs" ]; then
-            echo "$server:$export_path  $mount_point  nfs  $mount_opts  0  0" >> /etc/fstab
+            echo "$server:$export_path  $mount_point  nfs  $mount_opts  0  0  $fstab_marker" >> /etc/fstab
         else
-            echo "$fstab_line  $mount_point  cifs  $mount_opts  0  0" >> /etc/fstab
+            echo "$fstab_line  $mount_point  cifs  $mount_opts  0  0  $fstab_marker" >> /etc/fstab
         fi
         ok "Added fstab entry for $mount_point."
     fi
@@ -3485,12 +4139,17 @@ apply_msd_drives() {
 
     local num_drives=2
     if [ "$YES" = false ]; then
-        printf "\nNumber of MSD drives (1-2) [2]: "
+        printf "\nNumber of MSD drives (1-2, blank to skip) [2]: "
         read -r num_input
-        num_drives="${num_input:-2}"
+        if [ -z "$num_input" ]; then
+            warn "No MSD drives configured; skipping."
+            return 0
+        fi
+        num_drives="$num_input"
         case "$num_drives" in
             1) num_drives=1 ;;
-            2|*) num_drives=2 ;;
+            2) num_drives=2 ;;
+            *) warn "Invalid number '$num_drives'; skipping MSD drives."; return 0 ;;
         esac
     fi
 
@@ -3766,8 +4425,8 @@ uninstall_ssh_key() {
     ok "Removed matching SSH key if present."
 }
 
-uninstall_permanent_install() {
-    info "Removing permanent optimizer install..."
+uninstall_on_device_optimizer() {
+    info "Removing on-device optimizer command..."
 
     if [ "$DRY_RUN" = true ]; then
         ok "DRY RUN: would remove $INSTALL_PATH."
@@ -3817,17 +4476,17 @@ uninstall_usb_extra() {
 uninstall_msd_storage() {
     info "Removing network storage configuration..."
 
+    local mount_point=""
+    if [ -f /etc/fstab ]; then
+        mount_point="$(grep -F '# pikvm-optimizer-msd-storage' /etc/fstab 2>/dev/null | awk '{print $2}' | head -1 || true)"
+    fi
+
     if [ "$DRY_RUN" = true ]; then
-        ok "DRY RUN: would unmount $mount_point and remove fstab entry."
+        ok "DRY RUN: would unmount ${mount_point:-optimizer-managed MSD storage} and remove optimizer-marked fstab entry."
         return 0
     fi
 
     make_rw
-
-    local mount_point=""
-    if [ -f /etc/fstab ]; then
-        mount_point="$(grep -E 'nfs|cifs' /etc/fstab 2>/dev/null | awk '{print $2}' | head -1 || true)"
-    fi
 
     if [ -n "$mount_point" ] && mountpoint -q "$mount_point" 2>/dev/null; then
         umount "$mount_point" 2>/dev/null && ok "Unmounted $mount_point." || warn "Could not unmount $mount_point."
@@ -3836,8 +4495,8 @@ uninstall_msd_storage() {
     if [ -f /etc/fstab ]; then
         local fstab_bak="/etc/fstab.bak.$(date +%Y%m%d-%H%M%S)"
         cp /etc/fstab "$fstab_bak"
-        grep -v -E 'nfs|cifs' /etc/fstab > /etc/fstab.tmp && mv /etc/fstab.tmp /etc/fstab
-        ok "Removed network storage fstab entries."
+        grep -v -F '# pikvm-optimizer-msd-storage' /etc/fstab > /etc/fstab.tmp && mv /etc/fstab.tmp /etc/fstab
+        ok "Removed optimizer-managed network storage fstab entries."
     fi
 
     delete_yaml_paths kvmd.msd.otg_devices msd.storage
@@ -4009,9 +4668,9 @@ health_check() {
     fi
 
     if [ -f "$INSTALL_PATH" ]; then
-        ok "Permanent optimizer install exists: $INSTALL_PATH"
+        ok "On-device optimizer command exists: $INSTALL_PATH"
     else
-        info "Permanent optimizer install not present."
+        info "On-device optimizer command not present."
     fi
 
     if [ -d /etc/sudoers.d ]; then
@@ -4131,6 +4790,8 @@ fi
 
 info "Target config: $CONFIG_FILE"
 info "Log file: $LOG_FILE"
+[ "$PRESET" != "interactive" ] && info "Preset: $PRESET"
+[ "$FLAGS_PROVIDED" = true ] && info "Flags provided: module flags active"
 
 if [ "$MODE" = "health" ]; then
     close_box
@@ -4168,7 +4829,7 @@ if [ "$MODE" = "uninstall" ]; then
     if [ "$UN_FAN" = true ]; then uninstall_fan; fi
     if [ "$UN_WATCHDOG" = true ]; then uninstall_watchdog; fi
     if [ "$UN_KEY" = true ]; then uninstall_ssh_key; fi
-    if [ "$UN_INSTALL" = true ]; then uninstall_permanent_install; fi
+    if [ "$UN_INSTALL" = true ]; then uninstall_on_device_optimizer; fi
     if [ "$UN_SUDO" = true ]; then uninstall_sudoers; fi
     if [ "$UN_MSD_BIOS_FIX" = true ]; then uninstall_msd_bios_fix; fi
     if [ "$UN_TAILSCALE_CRASH_FIX" = true ]; then uninstall_tailscale_crash_fix; fi
@@ -4192,13 +4853,23 @@ if [ "$MODE" = "uninstall" ]; then
     exit 0
 fi
 
-if [ "$YES" != true ]; then
+if [ "$YES" != true ] && [ "$FLAGS_PROVIDED" != true ]; then
     interactive_module_menu
 fi
 
 if [ "$MODE" = "uninstall" ]; then
     interactive_uninstall_menu
     draw "UNINSTALL / CLEANUP"
+
+    # Confirm before executing destructive changes
+    if [ "$YES" != true ]; then
+        box_prefix; printf "Apply selected uninstall/cleanup operations? [y/N]: "
+        read -r confirm
+        case "$confirm" in
+            y|Y) ;;
+            *) warn "Uninstall cancelled."; close_box; SUCCESS=true; make_ro; exit 0 ;;
+        esac
+    fi
 
     if [ "$UN_CORE" = true ]; then uninstall_core_config; fi
     if [ "$UN_QUALITY_CAP" = true ]; then uninstall_quality_cap; fi
@@ -4209,7 +4880,7 @@ if [ "$MODE" = "uninstall" ]; then
     if [ "$UN_FAN" = true ]; then uninstall_fan; fi
     if [ "$UN_WATCHDOG" = true ]; then uninstall_watchdog; fi
     if [ "$UN_KEY" = true ]; then uninstall_ssh_key; fi
-    if [ "$UN_INSTALL" = true ]; then uninstall_permanent_install; fi
+    if [ "$UN_INSTALL" = true ]; then uninstall_on_device_optimizer; fi
     if [ "$UN_SUDO" = true ]; then uninstall_sudoers; fi
     if [ "$UN_MSD_BIOS_FIX" = true ]; then uninstall_msd_bios_fix; fi
     if [ "$UN_TAILSCALE_CRASH_FIX" = true ]; then uninstall_tailscale_crash_fix; fi
@@ -4249,33 +4920,51 @@ fi
 
 draw "EXECUTING OPTIMIZATION PACKS"
 
+if [ "$FLAGS_PROVIDED" = true ]; then
+    box_line "Running with explicit flags/preset: ${PRESET:-custom}"
+elif [ "$PRESET" != "interactive" ]; then
+    box_line "Running preset: $PRESET"
+fi
+box_line ""
+
+# --- Group 1: Foundation (base config, independent patches) ---
 if [ "$RUN_CORE" = true ]; then apply_core_config; fi
 if [ "$RUN_QUALITY_CAP" = true ]; then apply_vnc_quality_cap; fi
+
+# --- Group 2: Dependency installations (must run before their dependents) ---
+box_line ""; if [ "$RUN_TAILSCALE_SETUP" = true ]; then apply_tailscale_setup; fi
+if [ "$RUN_TAILSCALE_CRASH_FIX" = true ]; then apply_tailscale_crash_fix; fi
+
+# --- Group 3: Tailscale-dependent tuning (needs TS installed from Group 2) ---
 if [ "$RUN_MTU" = true ]; then apply_tailscale_mtu; fi
-if [ "$RUN_KEEPALIVE" = true ]; then apply_tcp_keepalive; fi
-if [ "$RUN_EDID" = true ]; then apply_edid; fi
 if [ "$RUN_SSL" = true ]; then apply_tailscale_ssl; fi
+if [ "$RUN_WATCHDOG" = true ]; then apply_tailscale_watchdog; fi
+if [ "$RUN_TAILSCALE_DIAG" = true ]; then apply_tailscale_diag; fi
+
+# --- Group 4: Independent config (no external deps, no YAML needed) ---
+box_line ""; if [ "$RUN_KEEPALIVE" = true ]; then apply_tcp_keepalive; fi
+if [ "$RUN_EDID" = true ]; then apply_edid; fi
 if [ "$RUN_FAN" = true ]; then apply_fan_curve; fi
-if [ "$RUN_MSD_BIOS_FIX" = true ]; then apply_msd_bios_fix; fi
+if [ "$RUN_WIFI" = true ]; then apply_wifi; fi
+
+# --- Group 5: YAML-dependent hardware config (merge into override.yaml) ---
+box_line ""; if [ "$RUN_MSD_BIOS_FIX" = true ]; then apply_msd_bios_fix; fi
 if [ "$RUN_USB_PRESET" = true ]; then apply_usb_preset; fi
 if [ "$RUN_USB_EXTRA" = true ]; then apply_usb_extra; fi
 if [ "$RUN_MSD_STORAGE" = true ]; then apply_msd_storage; fi
 if [ "$RUN_MSD_DRIVES" = true ]; then apply_msd_drives; fi
 if [ "$RUN_OVERRIDE_D" = true ]; then apply_override_d; fi
-if [ "$RUN_TAILSCALE_DIAG" = true ]; then apply_tailscale_diag; fi
-if [ "$RUN_TAILSCALE_SETUP" = true ]; then apply_tailscale_setup; fi
-if [ "$RUN_TAILSCALE_CRASH_FIX" = true ]; then apply_tailscale_crash_fix; fi
-if [ "$RUN_WIFI" = true ]; then apply_wifi; fi
-if [ "$RUN_ROOT_PASSWORD" = true ]; then apply_root_password; fi
+
+# --- Group 6: Interactive security (user must be present) ---
+box_line ""; if [ "$RUN_ROOT_PASSWORD" = true ]; then apply_root_password; fi
+if [ "$RUN_FIRST_RUN" = true ]; then apply_first_run; fi       # admin password before 2FA
 if [ "$RUN_2FA" = true ]; then apply_2fa; fi
-if [ "$RUN_FIRST_RUN" = true ]; then apply_first_run; fi
 
-enable_oled_if_present
-
-if [ "$RUN_WATCHDOG" = true ]; then apply_tailscale_watchdog; fi
+# --- Group 7: Post-setup (no dependencies, run after config is settled) ---
+box_line ""; enable_oled_if_present
 if [ "$RUN_KEY" = true ]; then apply_ssh_key; fi
-if [ "$RUN_INSTALL" = true ]; then install_optimizer_permanently; fi
-# if [ "$RUN_SUDO" = true ]; then apply_restricted_sudo; fi (DISABLED)
+if [ "$RUN_INSTALL" = true ]; then install_on_device_optimizer; fi
+# if [ "$RUN_SUDO" = true ]; then apply_restricted_sudo; fi (DISABLED — security risk)
 
 final_restart || true
 health_check || true
