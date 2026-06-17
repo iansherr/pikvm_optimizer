@@ -9,7 +9,8 @@ The script runs from your workstation, copies a temporary remote script to your 
 - **First-run setup**: Set the Web/KVM `admin` password, change the Linux `root` password, and configure TOTP 2FA.
 - **Video and viewer tuning**: Apply streamer/VNC settings, persistent EDID, JPEG quality cap, and fan curve settings.
 - **WiFi onboarding**: Configure WiFi client mode with automatic fallback AP mode, including later USB WiFi dongle support.
-- **Tailscale setup and diagnostics**: Install/start Tailscale, run `tailscale up`, tune MTU/keepalive, and diagnose networking issues.
+- **Tailscale setup and diagnostics**: Install/start Tailscale (with automatic curl-based fallback if pacman mirror fails), run `tailscale up`, tune MTU/keepalive, and diagnose networking issues.
+- **PiKVM OS updates**: Refresh package databases and upgrade all packages with built-in retries, reboot detection, and post-update reconnection guidance.
 - **MSD and USB utilities**: Apply BIOS-safe MSD behavior, configure USB device presets/extras, mount network storage, and add virtual MSD drives.
 - **Safe operations**: Dry-run mode, backups before config writes, uninstall/cleanup menus, and rollback guidance.
 
@@ -54,6 +55,10 @@ Run interactively from your Mac or Linux workstation:
 Recommended first-run modules to consider:
 
 ```bash
+# First, update the PiKVM OS to refresh package databases (recommended before tailscale)
+./pikvm_optimizer.sh --host pikvm.local --pikvm-update
+
+# Then apply setup modules
 ./pikvm_optimizer.sh --host pikvm.local --first-run --root-password --wifi --tailscale-setup --2fa
 ```
 
@@ -62,8 +67,9 @@ Notes:
 - `--first-run` changes the PiKVM Web UI/API/VNC `admin` password.
 - `--root-password` changes the Linux `root` password used for SSH/serial console.
 - `--wifi` can configure client WiFi and fallback AP mode. Generated fallback AP credentials are printed after setup.
-- `--tailscale-setup` installs/enables Tailscale and runs `tailscale up` in interactive mode.
+- `--tailscale-setup` installs/enables Tailscale and runs `tailscale up` in interactive mode. Has automatic fallback if pacman mirror fails.
 - `--2fa` initializes or shows the PiKVM TOTP secret.
+- `--pikvm-update` refreshes package databases and upgrades all PiKVM OS packages. Run it before other modules to ensure package versions are current.
 
 ## Common commands
 
@@ -79,6 +85,9 @@ Notes:
 
 # Configure WiFi client + fallback AP
 ./pikvm_optimizer.sh --host pikvm.local --wifi
+
+# Refresh package DBs and upgrade all PiKVM OS packages
+./pikvm_optimizer.sh --host pikvm.local --pikvm-update
 
 # Install/start Tailscale and log in
 ./pikvm_optimizer.sh --host pikvm.local --tailscale-setup
@@ -145,8 +154,9 @@ Notes:
 | `--quality-cap` | VNC JPEG quality cap for viewer compatibility |
 | `--keepalive` | TCP keepalive tuning for Tailscale stability |
 | `--tailscale-diag` | Read-only Tailscale networking diagnosis |
-| `--tailscale-setup` | Install/enable Tailscale and run `tailscale up` |
+| `--tailscale-setup` | Install/enable Tailscale and run `tailscale up` (auto-retries with DB refresh and curl fallback) |
 | `--tailscale-crash-fix` | 32-bit ARM Tailscale crash mitigations; skipped on 64-bit systems |
+| `--pikvm-update` | Refresh package databases and upgrade all PiKVM OS packages (3 retries each step) |
 | `--wifi` | WiFi client mode with fallback AP mode |
 | `--root-password` | Change Linux root password |
 | `--first-run` | Set Web/KVM admin password |
@@ -242,7 +252,7 @@ The script backs up edited configuration files before writing where practical an
 ## Safety model
 
 - Use `--dry-run` first when exploring modules.
-- Secret/login modules are explicit opt-in and are not included in `--all`.
+- Secret/login modules and `--pikvm-update` are explicit opt-in and are not included in `--all` or `--recommended`.
 - Password modules explain the difference between Linux `root` and Web/KVM `admin` credentials before prompting.
 - WiFi setup prints the generated fallback AP SSID/password and fallback URL.
 - Network storage setup expects an existing NFS/SMB server and persists mounts in `/etc/fstab`.

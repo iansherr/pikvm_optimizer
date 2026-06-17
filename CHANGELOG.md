@@ -5,6 +5,46 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `--pikvm-update` module to refresh package databases and upgrade all PiKVM OS packages
+  - 3 retries (5s apart) for DB refresh, 3 retries (10s apart) for package upgrade
+  - Detects kernel package upgrades and recommends reboot
+  - Post-update reconnection guidance and "what to try next" on failure
+  - Runs as Group 0 before all other modules so updates are applied first
+  - Interactive menu key: `u`
+  - Retries `ro` 3× on finish; interactive reboot prompt if FS busy
+- `--verbose` flag to show real-time command output (pacman, curl) during long operations
+  - Non-verbose mode shows elapsed-time indicator every 10s
+- `install_tailscale_fallback()`: curl-based direct download fallback when `pacman -S` fails
+  - Scrapes Arch ARM mirror and PiKVM repo directory listings for latest package versions
+  - Downloads via curl and installs with `pacman -U`
+  - Handles stale package databases and intermittent mirror DNS
+- TOTP code verification now runs for both new and existing 2FA secrets
+  - Adaptive prompts: existing configs only offer skip, new setups offer skip/disable
+
+### Changed
+
+- `--tailscale-setup` now falls back through three methods: pacman → pacman with DB refresh → curl direct download
+  - If all methods fail, prints specific guidance to run `--pikvm-update` first
+- Admin password: kvmd-htpasswd prompts now visible; clear instruction line added
+- Bracket prompts changed to parenthetical examples (`[nfs]` → `(e.g. nfs)`) so "blank to skip" behavior matches text
+- USB BIOS preset: detailed explanation of when to use (UEFI boot-loop workaround for Dell/HP)
+- `make_ro()` retries 3× before prompting; non-interactive mode warns and skips
+- `pikvm_update` tracked in rollback summary
+
+### Fixed
+
+- Fixed `cancel_remote()` EXIT trap bug: `trap - EXIT INT TERM` before `exit 130` prevented `cleanup_remote()`/`rollback_changes()` from ever running on Ctrl-C
+  - Changed to `trap - INT TERM` only, preserving EXIT trap so rollback actually executes
+- Added 6 irreversible module tracking flags for accurate rollback summary reporting
+- Added rollback summary section listing what was reverted and what was left in place
+- Fixed box centering for `box_top()`, `box_bottom()`, `box_sep()`, and 3 interactive prompts (module selection, uninstall, uninstall confirmation)
+- Fixed `LOG_FILE` fallback: probes `/root/` → `/var/log/` → `/tmp/` for writability
+- `pikvm_update` added to irreversible actions in rollback summary
+
 ## [1.4.2] - 2026-06-16
 
 ### Changed

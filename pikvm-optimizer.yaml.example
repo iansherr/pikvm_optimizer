@@ -31,6 +31,7 @@ modules:
   tailscale_diag: false
   tailscale_setup: false
   tailscale_crash_fix: false
+  pikvm_update: false
   wifi: false
   root_password: false
   first_run: false

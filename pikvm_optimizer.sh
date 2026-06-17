@@ -88,6 +88,7 @@ modules:
   tailscale_diag: false
   tailscale_setup: false
   tailscale_crash_fix: false
+  pikvm_update: false
   wifi: false
   root_password: false
   first_run: false
@@ -205,6 +206,7 @@ module_flags = {
     "tailscale_diag": "--tailscale-diag",
     "tailscale_setup": "--tailscale-setup",
     "tailscale_crash_fix": "--tailscale-crash-fix",
+    "pikvm_update": "--pikvm-update",
     "wifi": "--wifi",
     "root_password": "--root-password",
     "first_run": "--first-run",
@@ -261,6 +263,7 @@ Connection options:
 Run modes:
   --dry-run          Preview actions without persistent PiKVM changes
   --yes              Non-interactive mode; run selected flags/preset directly
+  --verbose          Show real-time command output (pacman, curl, etc.)
   --health-check     Run diagnostics only
   --uninstall        Open uninstall/cleanup menu
   --restore          Restore /etc/kvmd/override.yaml from backup
@@ -285,6 +288,7 @@ Module flags:
   --tailscale-diag   Run Tailscale networking diagnosis (read-only)
   --tailscale-setup  Install/enable Tailscale and run tailscale up
   --tailscale-crash-fix  Enable Tailscale crash mitigations for 32-bit ARM (auto-detects arch)
+  --pikvm-update     Update PiKVM OS (refresh package DB, upgrade all packages)
   --wifi             Configure WiFi (AP fallback + client mode)
   --wifi-ssid SSID   Default WiFi client SSID for the interactive WiFi wizard
   --wifi-country CC  Default WiFi country code for the interactive WiFi wizard
@@ -425,8 +429,12 @@ while [ "$#" -gt 0 ]; do
             REMOTE_ARGS+=(--none)
             shift
             ;;
-        --core|--no-core|--mtu|--edid|--ssl|--fan|--watchdog|--key|--install|--sudo|--quality-cap|--keepalive|--tailscale-diag|--tailscale-setup|--tailscale-crash-fix|--wifi|--root-password|--2fa|--first-run|--msd-bios-fix|--usb-preset|--usb-extra|--msd-storage|--msd-drives|--override-d)
+        --core|--no-core|--mtu|--edid|--ssl|--fan|--watchdog|--key|--install|--sudo|--quality-cap|--keepalive|--tailscale-diag|--tailscale-setup|--tailscale-crash-fix|--pikvm-update|--wifi|--root-password|--2fa|--first-run|--msd-bios-fix|--usb-preset|--usb-extra|--msd-storage|--msd-drives|--override-d)
             REMOTE_ARGS+=("$1")
+            shift
+            ;;
+        --verbose)
+            REMOTE_ARGS+=(--verbose)
             shift
             ;;
         --wifi-ssid|--wifi-country|--wifi-ap-ssid)
@@ -691,6 +699,7 @@ REMOTE_VERSION="1.4.2"
 
 DRY_RUN=false
 YES=false
+VERBOSE=false
 MODE="optimize"
 PRESET="interactive"
 FLAGS_PROVIDED=false
@@ -703,6 +712,7 @@ Usage:
 Run modes:
   --dry-run          Preview actions without persistent changes
   --yes              Non-interactive mode; run selected flags/preset directly
+  --verbose          Show real-time command output (pacman, curl, etc.)
   --health-check     Run diagnostics only
   --uninstall        Open uninstall/cleanup menu
   --restore          Restore /etc/kvmd/override.yaml from backup
@@ -711,6 +721,9 @@ Presets:
   --recommended      Select recommended modules
   --all              Select all safe modules; excludes secret/login modules
   --none             Select no modules
+
+System update:
+  --pikvm-update     Refresh package databases and upgrade all PiKVM packages
 
 Install/update:
   --install          Copy this remote optimizer to /usr/local/sbin/pikvm-optimizer
@@ -762,6 +775,7 @@ UN_KEEPALIVE=false
 RUN_TAILSCALE_DIAG=false
 RUN_TAILSCALE_SETUP=false
 RUN_TAILSCALE_CRASH_FIX=false
+RUN_PIKVM_UPDATE=false
 RUN_WIFI=false
 RUN_ROOT_PASSWORD=false
 RUN_2FA=false
@@ -960,6 +974,11 @@ while [ "$#" -gt 0 ]; do
             FLAGS_PROVIDED=true
             shift
             ;;
+        --pikvm-update)
+            RUN_PIKVM_UPDATE=true
+            FLAGS_PROVIDED=true
+            shift
+            ;;
         --wifi)
             RUN_WIFI=true
             FLAGS_PROVIDED=true
@@ -1061,10 +1080,14 @@ while [ "$#" -gt 0 ]; do
             WIFI_AP_SSID="${2:-}"
             shift 2
             ;;
-        --no-color)
-            export NO_COLOR=true
-            shift
-            ;;
+--verbose)
+             VERBOSE=true
+             shift
+             ;;
+         --no-color)
+             export NO_COLOR=true
+             shift
+             ;;
         --reboot)
             REBOOT=true
             shift
@@ -1165,6 +1188,7 @@ TFA_EXECUTED=false
 TAILSCALE_SETUP_EXECUTED=false
 WIFI_EXECUTED=false
 TAILSCALE_CRASH_FIX_EXECUTED=false
+PIKVM_UPDATE_EXECUTED=false
 
 # ------------------------------------------------------------------------------
 # Remote UI helpers
@@ -1269,6 +1293,25 @@ box_line() {
     done < <(printf "%s\n" "$plain" | fold -s -w "$BOX_W")
 }
 
+# Run a command, suppressing stdout/stderr unless --verbose is set.
+# Long-running commands show elapsed time every 10s in non-verbose mode.
+_run() {
+    if [ "$VERBOSE" = true ]; then
+        "$@"
+    else
+        "$@" >/dev/null 2>&1 &
+        local pid=$!
+        local sec=0
+        while kill -0 "$pid" 2>/dev/null; do
+            sleep 2
+            sec=$((sec + 2))
+            [ $((sec % 10)) -eq 0 ] && info "Still running... (${sec}s elapsed)"
+        done
+        wait "$pid"
+        return $?
+    fi
+}
+
 draw() {
     local title="$1"
     printf "%b" "$CLEAR"
@@ -1360,7 +1403,31 @@ make_ro() {
     fi
 
     if [ "${MADE_RW:-false}" = true ] && command -v ro >/dev/null 2>&1; then
-        ro >/dev/null 2>&1 || ro || true
+        local attempt=1
+        while [ $attempt -le 3 ]; do
+            if ro >/dev/null 2>&1; then
+                MADE_RW=false
+                return 0
+            fi
+            [ $attempt -lt 3 ] && sleep 2
+            attempt=$((attempt + 1))
+        done
+
+        # All attempts failed — likely SSH holding FS busy
+        warn "Root FS busy after 3 attempts (active SSH session)."
+        if [ "$YES" = false ] && [ -t 0 ]; then
+            box_prefix; printf "Reboot now to complete read-only remount? [y/N]: "
+            read -r ans
+            case "$ans" in
+                y|Y)
+                    box_line "Rebooting... SSH will disconnect. Reconnect and run 'ro' to verify."
+                    reboot
+                    ;;
+                *) warn "Skipping reboot. Run 'ro' or reboot manually after disconnecting." ;;
+            esac
+        else
+            warn "Skipping reboot. Run 'ro' or reboot manually after disconnecting."
+        fi
         MADE_RW=false
     fi
 }
@@ -1542,6 +1609,7 @@ rollback_changes() {
     $TAILSCALE_SETUP_EXECUTED &&     { left+="${sep}Tailscale install/registration"; sep=", "; }
     $WIFI_EXECUTED &&                { left+="${sep}WiFi configuration"; sep=", "; }
     $TAILSCALE_CRASH_FIX_EXECUTED && { left+="${sep}Tailscale crash fix"; sep=", "; }
+    $PIKVM_UPDATE_EXECUTED &&        { left+="${sep}PiKVM OS update"; sep=", "; }
 
     box_sep
     if [ -n "$reverted" ]; then
@@ -2163,6 +2231,7 @@ interactive_module_menu() {
         box_line "[t] [$(yn_marker "$RUN_TAILSCALE_DIAG")] Tailscale networking diagnosis (read-only)"
         box_line "[g] [$(yn_marker "$RUN_TAILSCALE_SETUP")] Tailscale install/login setup"
         box_line "[c] [$(yn_marker "$RUN_TAILSCALE_CRASH_FIX")] Tailscale crash fix (32-bit ARM mitigations)"
+        box_line "[u] [$(yn_marker "$RUN_PIKVM_UPDATE")] PiKVM OS update (refresh DB, upgrade all packages)"
         box_line "[w] [$(yn_marker "$RUN_WIFI")] WiFi configuration (AP + client)"
         box_line "[x] [$(yn_marker "$RUN_ROOT_PASSWORD")] Change root password"
         box_line "[z] [$(yn_marker "$RUN_2FA")] Two-factor authentication (TOTP)"
@@ -2196,6 +2265,7 @@ interactive_module_menu() {
             t|T) toggle_bool RUN_TAILSCALE_DIAG ;;
             g|G) toggle_bool RUN_TAILSCALE_SETUP ;;
             c|C) toggle_bool RUN_TAILSCALE_CRASH_FIX ;;
+            u|U) toggle_bool RUN_PIKVM_UPDATE ;;
             w|W) toggle_bool RUN_WIFI ;;
             x|X) toggle_bool RUN_ROOT_PASSWORD ;;
             z|Z) toggle_bool RUN_2FA ;;
@@ -2421,6 +2491,83 @@ EOF
     warn "Not restarting systemd-networkd automatically to avoid dropping SSH."
 }
 
+# ---------------------------------------------------------------------------
+# When pacman's mirror DNS is flaky or the package database is stale, this
+# fallback scrapes mirror directory listings to discover the latest package
+# versions and installs them via curl + pacman -U.
+# ---------------------------------------------------------------------------
+_install_tailscale_fallback() {
+    local arch_url="http://mirror.archlinuxarm.org/aarch64/extra"
+    local pikvm_conf="/etc/pacman.d/pikvm"
+    local pikvm_url=""
+
+    if ! command -v curl >/dev/null 2>&1; then
+        warn "curl not available; cannot use direct download fallback."
+        return 1
+    fi
+
+    if [ -f "$pikvm_conf" ]; then
+        pikvm_url="$(grep -E '^Server' "$pikvm_conf" 2>/dev/null | awk '{print $2}')"
+    fi
+    if [ -z "$pikvm_url" ]; then
+        warn "Cannot determine PiKVM repo URL from $pikvm_conf; fallback unavailable."
+        return 1
+    fi
+
+    local arch_listing pikvm_listing
+    arch_listing=$(curl -sL --max-time 30 "$arch_url/" 2>/dev/null) || {
+        warn "Failed to fetch Arch ARM package listing from $arch_url"
+        return 1
+    }
+    pikvm_listing=$(curl -sL --max-time 30 "$pikvm_url/" 2>/dev/null) || {
+        warn "Failed to fetch PiKVM repo listing from $pikvm_url"
+        return 1
+    }
+
+    local latest_ts
+    latest_ts=$(echo "$arch_listing" | grep -oP 'tailscale-\d+\.\d+\.\d+-\d+' | sort -V | tail -1)
+    if [ -z "$latest_ts" ]; then
+        warn "Could not find latest tailscale version in Arch ARM mirror listing."
+        return 1
+    fi
+    local ts_ver="${latest_ts#tailscale-}"
+    local ts_file="tailscale-${ts_ver}-aarch64.pkg.tar.xz"
+
+    local latest_pikvm
+    latest_pikvm=$(echo "$pikvm_listing" | grep -oP 'tailscale-pikvm-\d+\.\d+-\d+' | sort -V | tail -1)
+    if [ -z "$latest_pikvm" ]; then
+        warn "Could not find tailscale-pikvm package in PiKVM repo listing."
+        return 1
+    fi
+    local pikvm_ver="${latest_pikvm#tailscale-pikvm-}"
+    local pikvm_file="tailscale-pikvm-${pikvm_ver}-any.pkg.tar.xz"
+
+    info "Downloading ${ts_file} from Arch ARM mirror..."
+    if ! curl -sL --max-time 60 -o "/tmp/$ts_file" "$arch_url/$ts_file" 2>/dev/null; then
+        warn "Failed to download $ts_file"
+        rm -f "/tmp/$ts_file"
+        return 1
+    fi
+
+    info "Downloading ${pikvm_file} from PiKVM repo..."
+    if ! curl -sL --max-time 30 -o "/tmp/$pikvm_file" "$pikvm_url/$pikvm_file" 2>/dev/null; then
+        warn "Failed to download $pikvm_file"
+        rm -f "/tmp/$ts_file" "/tmp/$pikvm_file"
+        return 1
+    fi
+
+    info "Installing packages locally with pacman -U..."
+    if ! pacman -U --noconfirm "/tmp/$ts_file" "/tmp/$pikvm_file" >/dev/null 2>&1; then
+        warn "Package installation failed. Check if the downloaded files are valid."
+        rm -f "/tmp/$ts_file" "/tmp/$pikvm_file"
+        return 1
+    fi
+
+    rm -f "/tmp/$ts_file" "/tmp/$pikvm_file"
+    ok "Tailscale and tailscale-pikvm installed via direct download."
+    return 0
+}
+
 apply_tailscale_setup() {
     info "Setting up Tailscale..."
 
@@ -2434,9 +2581,37 @@ apply_tailscale_setup() {
     if ! command -v tailscale >/dev/null 2>&1; then
         if command -v pacman >/dev/null 2>&1; then
             info "Installing tailscale package..."
-            if ! pacman -S --needed --noconfirm tailscale-pikvm >/dev/null 2>&1; then
-                warn "Could not install tailscale-pikvm with pacman. Check package mirrors/network and rerun."
-                return 0
+            if _run pacman -S --needed --noconfirm tailscale-pikvm; then
+                ok "tailscale-pikvm installed via pacman."
+            else
+                warn "pacman install failed. Refreshing package databases and retrying..."
+                if _run pacman -Syy --noconfirm; then
+                    info "Package databases refreshed. Retrying install..."
+                    if _run pacman -S --needed --noconfirm tailscale-pikvm; then
+                        ok "tailscale-pikvm installed after DB refresh."
+                    else
+                        warn "Still failed after DB refresh. Trying direct download fallback..."
+                        if ! _install_tailscale_fallback; then
+                            warn "All install methods failed. The most likely cause is a stale package"
+                            warn "database or mirror DNS issues on this PiKVM."
+                            box_line "Try running the PiKVM update module first:"
+                            box_line "  $0 --host <ip> --pikvm-update"
+                            box_line "Then rerun tailscale setup:"
+                            box_line "  $0 --host <ip> --tailscale-setup"
+                            return 0
+                        fi
+                    fi
+                else
+                    warn "Package DB refresh failed (DNS/mirror issue?). Trying direct download fallback..."
+                    if ! _install_tailscale_fallback; then
+                        warn "All install methods failed. Network or mirror issues on this PiKVM."
+                        box_line "Try running the PiKVM update module first:"
+                        box_line "  $0 --host <ip> --pikvm-update"
+                        box_line "Then rerun tailscale setup:"
+                        box_line "  $0 --host <ip> --tailscale-setup"
+                        return 0
+                    fi
+                fi
             fi
         else
             warn "tailscale not installed and pacman not found; skipped setup."
@@ -2465,6 +2640,116 @@ apply_tailscale_setup() {
         TAILSCALE_SETUP_EXECUTED=true
     else
         warn "tailscale up did not complete. You can rerun: tailscale up"
+    fi
+}
+
+# ---------------------------------------------------------------------------
+# PiKVM OS update: refresh package databases and upgrade all packages.
+# Has built-in retries, reboot detection, and post-update guidance.
+# ---------------------------------------------------------------------------
+apply_pikvm_update() {
+    box_line ""
+    box_line "${BOLD}PiKVM OS UPDATE${RESET}"
+    box_line ""
+    box_line "This will refresh package databases and upgrade all PiKVM OS packages."
+    box_line "It may take several minutes. If the kernel is updated, the PiKVM may"
+    box_line "reboot and your SSH connection will drop."
+    box_line ""
+    box_line "Press Ctrl-C within the next 5 seconds to cancel..."
+    sleep 5
+
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would run: pacman -Syy && pacman -Su"
+        return 0
+    fi
+
+    make_rw
+
+    info "Refreshing package databases..."
+    local db_ok=false attempt=1
+    while [ $attempt -le 3 ]; do
+        if _run pacman -Syy --noconfirm --color never; then
+            db_ok=true
+            break
+        fi
+        [ $attempt -lt 3 ] && warn "Attempt $attempt/3 failed. Retrying in 5 seconds..." && sleep 5
+        attempt=$((attempt + 1))
+    done
+
+    if [ "$db_ok" != true ]; then
+        warn "Package database refresh failed after 3 attempts."
+        box_line ""
+        box_line "Possible causes:"
+        box_line "  - Mirror DNS resolution issue (intermittent on some networks)"
+        box_line "  - Network connectivity problem on the PiKVM"
+        box_line ""
+        box_line "What to try next:"
+        box_line "  1. Check PiKVM network: ssh root@pikvm ping -c3 8.8.8.8"
+        box_line "  2. Check DNS: ssh root@pikvm ping -c3 mirror.archlinuxarm.org"
+        box_line "  3. Run update manually: ssh root@pikvm && pacman -Syy && pacman -Su"
+        box_line "  4. Retry this update module when network is stable"
+        PIKVM_UPDATE_EXECUTED=true
+        return 0
+    fi
+    ok "Package databases refreshed."
+
+    # Check for available updates
+    local updates
+    updates=$(pacman -Qu --color never 2>/dev/null) || true
+    if [ -z "$updates" ]; then
+        ok "All packages are already up to date."
+        PIKVM_UPDATE_EXECUTED=true
+        return 0
+    fi
+
+    local pkg_count
+    pkg_count=$(echo "$updates" | wc -l | tr -d ' ')
+    box_line "Found $pkg_count upgradable package(s)."
+
+    info "Upgrading packages (this may take several minutes)..."
+    local up_ok=false attempt=1
+    while [ $attempt -le 3 ]; do
+        if _run pacman -Su --noconfirm --color never; then
+            up_ok=true
+            break
+        fi
+        [ $attempt -lt 3 ] && warn "Attempt $attempt/3 failed. Retrying in 10 seconds..." && sleep 10
+        attempt=$((attempt + 1))
+    done
+
+    if [ "$up_ok" != true ]; then
+        warn "Package upgrade failed after 3 attempts."
+        box_line ""
+        box_line "Possible causes:"
+        box_line "  - Mirror download failure (interrupted connection)"
+        box_line "  - Disk space exhaustion"
+        box_line "  - Package conflicts"
+        box_line ""
+        box_line "What to try next:"
+        box_line "  1. Check disk space: ssh root@pikvm df -h"
+        box_line "  2. Run upgrade manually: ssh root@pikvm && pacman -Su"
+        box_line "  3. If package conflicts persist: ssh root@pikvm && pacman -Syu"
+        PIKVM_UPDATE_EXECUTED=true
+        return 0
+    fi
+
+    ok "All packages upgraded successfully."
+    PIKVM_UPDATE_EXECUTED=true
+
+    # Reboot guidance — highlight that kernel/new-kernel packages need a reboot
+    if echo "$updates" | grep -qiE '^(linux |linux-rpi |linux-firmware |raspberrypi-)' 2>/dev/null; then
+        box_line ""
+        warn "Kernel packages were upgraded. A reboot is strongly recommended."
+        box_line "The SSH connection will drop after reboot."
+        box_line ""
+        box_line "Reconnect with: ssh root@pikvm.local (or your PiKVM's IP)"
+        box_line ""
+        box_line "After reconnecting, rerun:"
+        box_line "  $0 --host <ip> --tailscale-setup [other flags]"
+    else
+        box_line ""
+        info "No kernel packages were upgraded, but a reboot is still recommended"
+        box_line "after any major package update for full stability."
     fi
 }
 
@@ -3743,6 +4028,10 @@ apply_first_run() {
         return 0
     fi
     make_rw
+    # kvmd-htpasswd prints its own "Password:" / "Repeat:" prompts to stderr
+    # and may read from stdin or /dev/tty. Pipe the password in case it
+    # accepts stdin; the user will see prompts regardless.
+    box_line "Re-enter the password when prompted below (kvmd-htpasswd):"
     if printf '%s\n%s\n' "$pass1" "$pass2" | kvmd-htpasswd set admin >/dev/null; then
         ok "Web/KVM admin password changed."
         ADMIN_PASSWORD_EXECUTED=true
@@ -3797,13 +4086,16 @@ apply_2fa() {
     printf "\n"
     rm -f "$totp_tmp"
 
-    # Verify TOTP code for newly initialized secrets
-    if [ "$already_existing" = false ] && [ "$YES" = false ] && [ -n "$secret" ]; then
+    if [ "$YES" = false ] && [ -n "$secret" ]; then
         local attempts=0
         while [ "$attempts" -lt 3 ]; do
             printf "Enter a 6-digit code from your authenticator app to verify setup"
             [ "$attempts" -gt 0 ] && printf " (attempt $((attempts + 1))/3)"
-            printf " [s=skip, d=disable]: "
+            if [ "$already_existing" = true ]; then
+                printf " [s=skip]: "
+            else
+                printf " [s=skip, d=disable]: "
+            fi
             read -r verify_code
 
             case "$verify_code" in
@@ -3812,10 +4104,14 @@ apply_2fa() {
                     break
                     ;;
                 d|D)
-                    make_rw
-                    kvmd-totp del >/dev/null 2>&1 || true
-                    warn "2FA disabled."
-                    return 0
+                    if [ "$already_existing" = false ]; then
+                        make_rw
+                        kvmd-totp del >/dev/null 2>&1 || true
+                        warn "2FA disabled."
+                        return 0
+                    fi
+                    warn "Existing 2FA config not removed. Use 'kvmd-totp del' on the PiKVM to disable."
+                    continue
                     ;;
             esac
 
@@ -3836,7 +4132,11 @@ sys.exit(0 if pyotp.TOTP(secret).verify(code) else 1)
                 return 1
             fi
             [ -z "$verify_code" ] && warn "No code entered." || warn "That code didn't work."
-            warn "Enter s to skip, d to disable, or try again:"
+            if [ "$already_existing" = true ]; then
+                warn "Enter s to skip, or try again:"
+            else
+                warn "Enter s to skip, d to disable, or try again:"
+            fi
         done
     fi
     box_sep
@@ -3903,7 +4203,12 @@ apply_usb_preset() {
     else
         printf "\nSelect USB preset:\n"
         printf "  n) Normal - keyboard + absolute mouse + MSD + HID (default)\n"
-        printf "  b) BIOS   - keyboard + relative mouse only (UEFI compatibility)\n"
+        printf "             Full USB device emulation for everyday use.\n"
+        printf "  b) BIOS   - keyboard + relative mouse only\n"
+        printf "             Stripped-down mode for UEFI systems that fail to POST\n"
+        printf "             or boot-loop with MSD/HID connected (Dell/HP workaround).\n"
+        printf "             Pick this if your PiKVM host won't boot past POST\n"
+        printf "             with the Normal preset enabled.\n"
         printf "Choice [n/b]: "
         read -r preset
         case "$preset" in
@@ -4031,7 +4336,7 @@ apply_msd_storage() {
     printf "This permanently mounts an existing NFS/SMB share so PiKVM can browse ISOs from it.\n"
     printf "You need the storage server address/name and exported path/share now.\n"
     printf "If you have not created a network share yet, leave this blank and rerun --msd-storage later.\n\n"
-    printf "Protocol (nfs/smb, blank to skip) [nfs]: "
+    printf "Protocol (nfs/smb, blank to skip; e.g. nfs): "
     read -r proto
     if [ -z "$proto" ]; then
         warn "No protocol selected; skipping network storage."
@@ -4139,7 +4444,7 @@ apply_msd_drives() {
 
     local num_drives=2
     if [ "$YES" = false ]; then
-        printf "\nNumber of MSD drives (1-2, blank to skip) [2]: "
+        printf "\nNumber of MSD drives (1-2, blank to skip; e.g., 2): "
         read -r num_input
         if [ -z "$num_input" ]; then
             warn "No MSD drives configured; skipping."
@@ -4926,6 +5231,9 @@ elif [ "$PRESET" != "interactive" ]; then
     box_line "Running preset: $PRESET"
 fi
 box_line ""
+
+# --- Group 0: System-level (run first so later modules see updated packages) ---
+box_line ""; if [ "$RUN_PIKVM_UPDATE" = true ]; then apply_pikvm_update; fi
 
 # --- Group 1: Foundation (base config, independent patches) ---
 if [ "$RUN_CORE" = true ]; then apply_core_config; fi
