@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.3] - 2026-06-21
+
+### Added
+
+- VNC password sync: `--core` now writes the admin password (from `--first-run`) to `/etc/kvmd/vncpasswd` so VNC uses the same credentials
+- `kvmd-vnc.service` auto-enabled and restarted on config changes
+
+### Fixed
+
+- VNC not working out of the box: `kvmd-vnc.service` was never enabled/restarted after config changes
+- Screens VNC client compatibility: disabled `vencrypt` by default in core config (VNCAuth-only mode)
+
+### Changed
+
+- Core VNC config now sets `vencrypt.enabled: false` for legacy client compatibility
+
 ## [Unreleased]
 
 ### Added

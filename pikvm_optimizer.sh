@@ -2,12 +2,12 @@
 # ==============================================================================
 # PiKVM Optimizer
 # Single-file macOS/Linux launcher with embedded PiKVM remote optimizer.
-# Version: 1.4.2
+# Version: 1.4.3
 # ==============================================================================
 
 set -euo pipefail
 
-VERSION="1.4.2"
+VERSION="1.4.3"
 
 # ------------------------------------------------------------------------------
 # Local launcher options
@@ -1184,6 +1184,7 @@ OVERRIDE_D_CHANGED=false
 # Irreversible module tracking (for rollback summary)
 ROOT_PASSWORD_EXECUTED=false
 ADMIN_PASSWORD_EXECUTED=false
+ADMIN_PASSWORD=""
 TFA_EXECUTED=false
 TAILSCALE_SETUP_EXECUTED=false
 WIFI_EXECUTED=false
@@ -2443,9 +2444,26 @@ vnc:
     auth:
         vncauth:
             enabled: true
+    vencrypt:
+        enabled: false
 EOF
 
     merge_yaml_patch "$patch"
+
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would enable kvmd-vnc service."
+        [ -n "$ADMIN_PASSWORD" ] && ok "DRY RUN: would sync admin password to VNC."
+    else
+        systemctl enable --now kvmd-vnc.service >/dev/null 2>&1 || warn "Could not enable kvmd-vnc.service."
+        if [ -n "$ADMIN_PASSWORD" ]; then
+            make_rw
+            printf '%s\n' "$ADMIN_PASSWORD" > /etc/kvmd/vncpasswd
+            chown kvmd-vnc:kvmd-vnc /etc/kvmd/vncpasswd
+            chmod 600 /etc/kvmd/vncpasswd
+            ok "Admin password synced to VNC."
+            restart_service_if_exists kvmd-vnc.service
+        fi
+    fi
 }
 
 apply_tailscale_mtu() {
@@ -4035,6 +4053,7 @@ apply_first_run() {
     if printf '%s\n%s\n' "$pass1" "$pass2" | kvmd-htpasswd set admin >/dev/null; then
         ok "Web/KVM admin password changed."
         ADMIN_PASSWORD_EXECUTED=true
+        ADMIN_PASSWORD="$pass1"
     else
         err "kvmd-htpasswd reported failure; Web/KVM admin password not changed."
         warn "Verify kvmd-htpasswd is functional: kvmd-htpasswd set admin"
@@ -5023,6 +5042,8 @@ final_restart() {
     if [ "${RUN_SSL:-false}" = true ]; then
         restart_service_if_exists kvmd-nginx.service false
     fi
+
+    restart_service_if_exists kvmd-vnc.service false
 
     # Post-run reboot warning for modules that benefit from reboot
     if [ "${RUN_MTU:-false}" = true ] || [ "${RUN_EDID:-false}" = true ]; then
