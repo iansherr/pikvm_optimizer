@@ -2,12 +2,12 @@
 # ==============================================================================
 # PiKVM Optimizer
 # Single-file macOS/Linux launcher with embedded PiKVM remote optimizer.
-# Version: 1.4.3
+# Version: 1.4.4
 # ==============================================================================
 
 set -euo pipefail
 
-VERSION="1.4.3"
+VERSION="1.4.4"
 
 # ------------------------------------------------------------------------------
 # Local launcher options
@@ -84,6 +84,7 @@ modules:
   fan: false
   watchdog: false
   quality_cap: false
+  vnc_legacy_client: false
   keepalive: false
   tailscale_diag: false
   tailscale_setup: false
@@ -202,6 +203,7 @@ module_flags = {
     "fan": "--fan",
     "watchdog": "--watchdog",
     "quality_cap": "--quality-cap",
+    "vnc_legacy_client": "--vnc-legacy-client",
     "keepalive": "--keepalive",
     "tailscale_diag": "--tailscale-diag",
     "tailscale_setup": "--tailscale-setup",
@@ -284,6 +286,7 @@ Module flags:
   --fan              Enable fan curve module
   --watchdog         Enable Tailscale watchdog module
   --quality-cap      Enable VNC JPEG quality cap (fixes Screens client issues)
+  --vnc-legacy-client  Disable VNC vencrypt for legacy clients (DISABLES VNC TLS)
   --keepalive        Enable TCP keepalive tuning for Tailscale stability
   --tailscale-diag   Run Tailscale networking diagnosis (read-only)
   --tailscale-setup  Install/enable Tailscale and run tailscale up
@@ -429,7 +432,7 @@ while [ "$#" -gt 0 ]; do
             REMOTE_ARGS+=(--none)
             shift
             ;;
-        --core|--no-core|--mtu|--edid|--ssl|--fan|--watchdog|--key|--install|--sudo|--quality-cap|--keepalive|--tailscale-diag|--tailscale-setup|--tailscale-crash-fix|--pikvm-update|--wifi|--root-password|--2fa|--first-run|--msd-bios-fix|--usb-preset|--usb-extra|--msd-storage|--msd-drives|--override-d)
+        --core|--no-core|--mtu|--edid|--ssl|--fan|--watchdog|--key|--install|--sudo|--quality-cap|--vnc-legacy-client|--keepalive|--tailscale-diag|--tailscale-setup|--tailscale-crash-fix|--pikvm-update|--wifi|--root-password|--2fa|--first-run|--msd-bios-fix|--usb-preset|--usb-extra|--msd-storage|--msd-drives|--override-d)
             REMOTE_ARGS+=("$1")
             shift
             ;;
@@ -691,7 +694,7 @@ ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "cat > $REMOTE_DEST_Q && chmod 700 
 set -euo pipefail
 set +e  # Disable exit-on-error; we handle errors manually
 
-REMOTE_VERSION="1.4.2"
+REMOTE_VERSION="1.4.4"
 
 # ------------------------------------------------------------------------------
 # Remote options
@@ -758,6 +761,7 @@ RUN_KEY=false
 RUN_INSTALL=false
 RUN_SUDO=false
 RUN_QUALITY_CAP=false
+RUN_VNC_LEGACY=false
 RUN_KEEPALIVE=false
 
 UN_CORE=false
@@ -840,10 +844,12 @@ while [ "$#" -gt 0 ]; do
             RUN_INSTALL=false
             RUN_SUDO=false
             RUN_QUALITY_CAP=false
+            RUN_VNC_LEGACY=false
             RUN_KEEPALIVE=false
             RUN_TAILSCALE_DIAG=false
             RUN_TAILSCALE_SETUP=false
             RUN_TAILSCALE_CRASH_FIX=false
+            RUN_PIKVM_UPDATE=false
             RUN_WIFI=false
             RUN_ROOT_PASSWORD=false
             RUN_2FA=false
@@ -868,10 +874,12 @@ while [ "$#" -gt 0 ]; do
             RUN_INSTALL=true
             RUN_SUDO=false
             RUN_QUALITY_CAP=true
+            RUN_VNC_LEGACY=false
             RUN_KEEPALIVE=true
             RUN_TAILSCALE_DIAG=true
             RUN_TAILSCALE_SETUP=false
             RUN_TAILSCALE_CRASH_FIX=true
+            RUN_PIKVM_UPDATE=false
             RUN_WIFI=false
             RUN_ROOT_PASSWORD=false
             RUN_2FA=false
@@ -897,10 +905,12 @@ while [ "$#" -gt 0 ]; do
             RUN_INSTALL=false
             RUN_SUDO=false
             RUN_QUALITY_CAP=false
+            RUN_VNC_LEGACY=false
             RUN_KEEPALIVE=false
             RUN_TAILSCALE_DIAG=false
             RUN_TAILSCALE_SETUP=false
             RUN_TAILSCALE_CRASH_FIX=false
+            RUN_PIKVM_UPDATE=false
             RUN_WIFI=false
             RUN_ROOT_PASSWORD=false
             RUN_2FA=false
@@ -951,6 +961,11 @@ while [ "$#" -gt 0 ]; do
             ;;
         --quality-cap)
             RUN_QUALITY_CAP=true
+            FLAGS_PROVIDED=true
+            shift
+            ;;
+        --vnc-legacy-client)
+            RUN_VNC_LEGACY=true
             FLAGS_PROVIDED=true
             shift
             ;;
@@ -1185,6 +1200,7 @@ OVERRIDE_D_CHANGED=false
 ROOT_PASSWORD_EXECUTED=false
 ADMIN_PASSWORD_EXECUTED=false
 ADMIN_PASSWORD=""
+VNC_PASSWORD_SYNCED=false
 TFA_EXECUTED=false
 TAILSCALE_SETUP_EXECUTED=false
 WIFI_EXECUTED=false
@@ -1717,6 +1733,47 @@ enable_service_if_exists() {
     fi
 }
 
+# True (0) when /etc/kvmd/vncpasswd still holds the password kvmd ships with.
+# kvmd's stock file is comment lines plus the single entry "admin"; starting
+# kvmd-vnc in that state puts a VNC listener on :5900 with a known password.
+vncpasswd_is_default() {
+    local file="/etc/kvmd/vncpasswd"
+
+    if [ ! -f "$file" ]; then
+        return 0
+    fi
+
+    local cleaned
+    cleaned="$(grep -v '^[[:space:]]*#' "$file" | sed '/^[[:space:]]*$/d' || true)"
+
+    case "$cleaned" in
+        ""|"admin")
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# True (0) when override.yaml carries the stray top-level vnc.vencrypt key that
+# optimizer 1.4.3 wrote. The real kvmd path is vnc.auth.vencrypt.enabled, so the
+# 1.4.3 key was silently ignored by kvmd and needs cleaning up.
+vnc_stray_vencrypt_present() {
+    python_yaml_available || return 1
+    [ -f "$CONFIG_FILE" ] || return 1
+
+    python3 - "$CONFIG_FILE" <<'PY' >/dev/null 2>&1
+import sys, yaml
+try:
+    data = yaml.safe_load(open(sys.argv[1]).read()) or {}
+except Exception:
+    sys.exit(1)
+vnc = data.get("vnc")
+sys.exit(0 if isinstance(vnc, dict) and "vencrypt" in vnc else 1)
+PY
+}
+
 validate_kvmd_config() {
     local file="$1"
 
@@ -2137,10 +2194,12 @@ apply_recommended_preset() {
     RUN_INSTALL=false
     RUN_SUDO=false
     RUN_QUALITY_CAP=false
+    RUN_VNC_LEGACY=false
     RUN_KEEPALIVE=false
     RUN_TAILSCALE_DIAG=false
     RUN_TAILSCALE_SETUP=false
     RUN_TAILSCALE_CRASH_FIX=false
+    RUN_PIKVM_UPDATE=false
     RUN_WIFI=false
     RUN_ROOT_PASSWORD=false
     RUN_2FA=false
@@ -2165,10 +2224,12 @@ apply_all_preset() {
     RUN_INSTALL=true
     RUN_SUDO=false
     RUN_QUALITY_CAP=true
+    RUN_VNC_LEGACY=false
     RUN_KEEPALIVE=true
     RUN_TAILSCALE_DIAG=true
     RUN_TAILSCALE_SETUP=false
     RUN_TAILSCALE_CRASH_FIX=true
+    RUN_PIKVM_UPDATE=false
     RUN_WIFI=false
     RUN_ROOT_PASSWORD=false
     RUN_2FA=false
@@ -2193,10 +2254,12 @@ apply_none_preset() {
     RUN_INSTALL=false
     RUN_SUDO=false
     RUN_QUALITY_CAP=false
+    RUN_VNC_LEGACY=false
     RUN_KEEPALIVE=false
     RUN_TAILSCALE_DIAG=false
     RUN_TAILSCALE_SETUP=false
     RUN_TAILSCALE_CRASH_FIX=false
+    RUN_PIKVM_UPDATE=false
     RUN_WIFI=false
     RUN_ROOT_PASSWORD=false
     RUN_2FA=false
@@ -2228,11 +2291,12 @@ interactive_module_menu() {
         box_line "[8] [$(yn_marker "$RUN_INSTALL")] Install/update on-device optimizer command"
         box_line "[9] [$(yn_marker "$RUN_QUALITY_CAP")] VNC JPEG quality cap (Screens fix)"
         box_line "[0] [$(yn_marker "$RUN_KEEPALIVE")] TCP keepalive tuning (Tailscale)"
+        box_line "[v] [$(yn_marker "$RUN_VNC_LEGACY")] Legacy VNC client compat (disables VNC TLS)"
         box_line ""
         box_line "[t] [$(yn_marker "$RUN_TAILSCALE_DIAG")] Tailscale networking diagnosis (read-only)"
         box_line "[g] [$(yn_marker "$RUN_TAILSCALE_SETUP")] Tailscale install/login setup"
         box_line "[c] [$(yn_marker "$RUN_TAILSCALE_CRASH_FIX")] Tailscale crash fix (32-bit ARM mitigations)"
-        box_line "[u] [$(yn_marker "$RUN_PIKVM_UPDATE")] PiKVM OS update (refresh DB, upgrade all packages)"
+        box_line "[i] [$(yn_marker "$RUN_PIKVM_UPDATE")] PiKVM OS update (refresh DB, upgrade all packages)"
         box_line "[w] [$(yn_marker "$RUN_WIFI")] WiFi configuration (AP + client)"
         box_line "[x] [$(yn_marker "$RUN_ROOT_PASSWORD")] Change root password"
         box_line "[z] [$(yn_marker "$RUN_2FA")] Two-factor authentication (TOTP)"
@@ -2263,10 +2327,11 @@ interactive_module_menu() {
             8) toggle_bool RUN_INSTALL ;;
             9) toggle_bool RUN_QUALITY_CAP ;;
             0) toggle_bool RUN_KEEPALIVE ;;
+            v|V) toggle_bool RUN_VNC_LEGACY ;;
             t|T) toggle_bool RUN_TAILSCALE_DIAG ;;
             g|G) toggle_bool RUN_TAILSCALE_SETUP ;;
             c|C) toggle_bool RUN_TAILSCALE_CRASH_FIX ;;
-            u|U) toggle_bool RUN_PIKVM_UPDATE ;;
+            i|I) toggle_bool RUN_PIKVM_UPDATE ;;
             w|W) toggle_bool RUN_WIFI ;;
             x|X) toggle_bool RUN_ROOT_PASSWORD ;;
             z|Z) toggle_bool RUN_2FA ;;
@@ -2444,25 +2509,16 @@ vnc:
     auth:
         vncauth:
             enabled: true
-    vencrypt:
-        enabled: false
 EOF
 
     merge_yaml_patch "$patch"
 
-    if [ "$DRY_RUN" = true ]; then
-        ok "DRY RUN: would enable kvmd-vnc service."
-        [ -n "$ADMIN_PASSWORD" ] && ok "DRY RUN: would sync admin password to VNC."
-    else
-        systemctl enable --now kvmd-vnc.service >/dev/null 2>&1 || warn "Could not enable kvmd-vnc.service."
-        if [ -n "$ADMIN_PASSWORD" ]; then
-            make_rw
-            printf '%s\n' "$ADMIN_PASSWORD" > /etc/kvmd/vncpasswd
-            chown kvmd-vnc:kvmd-vnc /etc/kvmd/vncpasswd
-            chmod 600 /etc/kvmd/vncpasswd
-            ok "Admin password synced to VNC."
-            restart_service_if_exists kvmd-vnc.service
-        fi
+    # Optimizer 1.4.3 wrote vnc.vencrypt.enabled, which is not a kvmd config
+    # path (the real one is vnc.auth.vencrypt.enabled) and was therefore
+    # silently ignored. Clean it up so it stops sitting dead in override.yaml.
+    if vnc_stray_vencrypt_present; then
+        info "Removing stray vnc.vencrypt key left by optimizer 1.4.3..."
+        delete_yaml_paths vnc.vencrypt
     fi
 }
 
@@ -2963,7 +3019,29 @@ apply_vnc_quality_cap() {
         fi
     fi
 
-    restart_service_if_exists kvmd-vnc.service
+    # No restart here: final_restart restarts kvmd-vnc when RUN_QUALITY_CAP is
+    # set. uninstall_quality_cap still restarts directly, because the uninstall
+    # dispatch exits before final_restart is reached.
+}
+
+apply_vnc_legacy_client() {
+    info "Disabling VNC vencrypt for legacy client compatibility..."
+    box_line "Some clients (Screens, older VNC viewers) implement vencrypt incorrectly"
+    box_line "and cannot connect while it is enabled."
+    warn "This disables TLS for VNC: passwords and screen contents cross the"
+    warn "network in cleartext. Only use this on a trusted network, or reach the"
+    warn "PiKVM over Tailscale/VPN instead."
+
+    local patch="/tmp/pikvm-optimizer.vnc-legacy.yaml"
+
+    cat > "$patch" <<'EOF'
+vnc:
+    auth:
+        vencrypt:
+            enabled: false
+EOF
+
+    merge_yaml_patch "$patch"
 }
 
 apply_tcp_keepalive() {
@@ -4061,6 +4139,73 @@ apply_first_run() {
     fi
 }
 
+# Copy the admin password set by apply_first_run into the VNC password file.
+# Must run after apply_first_run (Group 6) — ADMIN_PASSWORD is empty before it.
+sync_vnc_password() {
+    if [ -z "$ADMIN_PASSWORD" ]; then
+        return 0
+    fi
+
+    info "Syncing admin password to VNC..."
+
+    local vncpass="/etc/kvmd/vncpasswd"
+
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would write the admin password to $vncpass."
+        return 0
+    fi
+
+    make_rw
+
+    if [ -f "$vncpass" ]; then
+        local backup_file="${vncpass}.bak.$(date +%Y%m%d-%H%M%S)"
+        if cp "$vncpass" "$backup_file"; then
+            ok "Backed up $vncpass to $backup_file"
+        else
+            warn "Could not back up $vncpass; overwriting it anyway."
+        fi
+    fi
+
+    # kvmd's VNCAuth file is one plaintext password per line. The password is
+    # NOT hashed, so ownership/permissions are the only thing protecting it.
+    if ! printf '%s\n' "$ADMIN_PASSWORD" > "$vncpass"; then
+        err "Could not write $vncpass; VNC password not synced."
+        return 1
+    fi
+
+    chown kvmd-vnc:kvmd-vnc "$vncpass" 2>/dev/null \
+        || warn "Could not chown $vncpass to kvmd-vnc; kvmd-vnc may not be able to read it."
+    chmod 600 "$vncpass" 2>/dev/null \
+        || warn "Could not chmod 600 $vncpass; it holds a cleartext password."
+
+    VNC_PASSWORD_SYNCED=true
+    ok "Admin password synced to VNC."
+}
+
+# Enable kvmd-vnc only once it has a password that isn't kvmd's shipped default.
+# Starting it otherwise exposes :5900 with the well-known password "admin".
+enable_vnc_service() {
+    # Only the modules that write VNC config bring the service up. --quality-cap
+    # patches an already-deployed server.py, so it restarts VNC but should not
+    # enable it on a box where the user deliberately keeps VNC off.
+    if [ "${RUN_CORE:-false}" != true ] && [ "${RUN_VNC_LEGACY:-false}" != true ]; then
+        return 0
+    fi
+
+    if [ "$VNC_PASSWORD_SYNCED" = true ] || ! vncpasswd_is_default; then
+        enable_service_if_exists kvmd-vnc.service
+        return 0
+    fi
+
+    warn "kvmd-vnc.service left stopped: /etc/kvmd/vncpasswd still holds the"
+    warn "default password. Starting VNC now would expose port 5900 with a"
+    warn "password that is public knowledge."
+    box_line "To enable VNC, set a password and start the service:"
+    box_line "  1) rerun this optimizer with --first-run (syncs the admin password), or"
+    box_line "     edit /etc/kvmd/vncpasswd by hand (one plaintext password per line)"
+    box_line "  2) systemctl enable --now kvmd-vnc.service"
+}
+
 apply_2fa() {
     info "Configuring PiKVM 2FA..."
     if ! command -v kvmd-totp >/dev/null 2>&1; then
@@ -4568,7 +4713,14 @@ uninstall_core_config() {
         kvmd.streamer.h264_gop \
         kvmd.streamer.quality \
         kvmd.streamer.h264_bitrate \
-        vnc.auth.vncauth.enabled
+        vnc.auth.vncauth.enabled \
+        vnc.auth.vencrypt.enabled \
+        vnc.vencrypt
+
+    if [ -f /etc/kvmd/vncpasswd ]; then
+        warn "/etc/kvmd/vncpasswd was not reverted; it may still hold the synced admin password."
+        box_line "Earlier copies are kept as /etc/kvmd/vncpasswd.bak.* if you need to restore one."
+    fi
 }
 
 uninstall_mtu() {
@@ -5033,6 +5185,10 @@ final_restart() {
         if [ "${RUN_SSL:-false}" = true ]; then
             ok "DRY RUN: would restart kvmd-nginx.service if present."
         fi
+        if [ "${RUN_CORE:-false}" = true ] || [ "${RUN_VNC_LEGACY:-false}" = true ] \
+            || [ "${RUN_QUALITY_CAP:-false}" = true ]; then
+            ok "DRY RUN: would restart kvmd-vnc.service if present."
+        fi
         return 0
     fi
 
@@ -5043,7 +5199,10 @@ final_restart() {
         restart_service_if_exists kvmd-nginx.service false
     fi
 
-    restart_service_if_exists kvmd-vnc.service false
+    if [ "${RUN_CORE:-false}" = true ] || [ "${RUN_VNC_LEGACY:-false}" = true ] \
+        || [ "${RUN_QUALITY_CAP:-false}" = true ]; then
+        restart_service_if_exists kvmd-vnc.service false
+    fi
 
     # Post-run reboot warning for modules that benefit from reboot
     if [ "${RUN_MTU:-false}" = true ] || [ "${RUN_EDID:-false}" = true ]; then
@@ -5259,6 +5418,7 @@ box_line ""; if [ "$RUN_PIKVM_UPDATE" = true ]; then apply_pikvm_update; fi
 # --- Group 1: Foundation (base config, independent patches) ---
 if [ "$RUN_CORE" = true ]; then apply_core_config; fi
 if [ "$RUN_QUALITY_CAP" = true ]; then apply_vnc_quality_cap; fi
+if [ "$RUN_VNC_LEGACY" = true ]; then apply_vnc_legacy_client; fi
 
 # --- Group 2: Dependency installations (must run before their dependents) ---
 box_line ""; if [ "$RUN_TAILSCALE_SETUP" = true ]; then apply_tailscale_setup; fi
@@ -5290,7 +5450,10 @@ if [ "$RUN_FIRST_RUN" = true ]; then apply_first_run; fi       # admin password 
 if [ "$RUN_2FA" = true ]; then apply_2fa; fi
 
 # --- Group 7: Post-setup (no dependencies, run after config is settled) ---
-box_line ""; enable_oled_if_present
+# VNC password sync must follow Group 6: apply_first_run is what sets ADMIN_PASSWORD.
+box_line ""; sync_vnc_password
+enable_vnc_service
+enable_oled_if_present
 if [ "$RUN_KEY" = true ]; then apply_ssh_key; fi
 if [ "$RUN_INSTALL" = true ]; then install_on_device_optimizer; fi
 # if [ "$RUN_SUDO" = true ]; then apply_restricted_sudo; fi (DISABLED — security risk)

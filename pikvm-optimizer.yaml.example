@@ -27,6 +27,9 @@ modules:
   fan: false
   watchdog: false
   quality_cap: false
+  # Disables VNC TLS (vencrypt) for legacy clients such as Screens.
+  # Only enable on a trusted network or behind Tailscale/VPN.
+  vnc_legacy_client: false
   keepalive: false
   tailscale_diag: false
   tailscale_setup: false

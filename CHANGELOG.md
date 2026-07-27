@@ -5,6 +5,57 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.4] - 2026-07-26
+
+### Security
+
+- `--core` no longer starts `kvmd-vnc.service` while `/etc/kvmd/vncpasswd` still holds kvmd's
+  shipped default password. In 1.4.3 the password sync never ran (see below), so enabling the
+  service put a VNC listener on port 5900 authenticating against the stock password `admin`.
+  The service is now enabled only once a non-default password is in place; otherwise the config
+  is written, the service is left stopped, and the run explains how to finish setup.
+- `vencrypt` is no longer disabled for everyone. Turning it off disables TLS for VNC, so
+  passwords and screen contents cross the network in cleartext. It now lives behind the opt-in
+  `--vnc-legacy-client` flag and kvmd's secure default is preserved unless you ask otherwise.
+
+### Fixed
+
+- VNC password sync never ran: `apply_core_config` (module group 1) read `$ADMIN_PASSWORD`, but
+  only `apply_first_run` (group 6) sets it, so the value was always empty and
+  `/etc/kvmd/vncpasswd` was never written. The sync moved to group 7, after first-run setup.
+- `vencrypt` was written to `vnc.vencrypt.enabled`, which is not a kvmd config path — the real
+  one is `vnc.auth.vencrypt.enabled`. kvmd ignores unknown override keys without erroring, so
+  the 1.4.3 setting silently did nothing and validation still passed. `--core` now removes the
+  stray key from existing `override.yaml` files.
+- `/etc/kvmd/vncpasswd` is backed up to `.bak.<timestamp>` before being overwritten, matching how
+  the SSL and watchdog modules treat files they replace.
+- `chown`/`chmod` on `/etc/kvmd/vncpasswd` now warn on failure instead of failing silently. A
+  failed `chown` leaves the file `root:root` mode 600, unreadable by the `kvmd-vnc` service user,
+  which breaks VNC auth with no visible cause.
+- `kvmd-vnc.service` is no longer restarted on every run. It is restarted only when a
+  VNC-affecting module ran, matching how the `kvmd-nginx` restart is gated on `--ssl`. Previously
+  every run emitted a spurious "service not found" warning on boxes without the VNC extra, and
+  dropped live VNC sessions during unrelated runs.
+- `uninstall_core_config` now removes `vnc.auth.vencrypt.enabled` and the stray `vnc.vencrypt`
+  key, and points at the `vncpasswd` backups.
+- `REMOTE_VERSION` was stale at `1.4.2`; 1.4.3 bumped only `VERSION`, so `--version` and the
+  installed on-device command both misreported.
+- The uninstall menu was unreachable from the module menu. `u|U` appeared twice in the same
+  `case`, and the PiKVM OS update toggle shadowed `MODE="uninstall"`, so the `u = uninstall menu`
+  the menu header advertised never fired. The OS update module moved to `i`; `u` now opens the
+  uninstall menu as documented.
+- Presets did not reset `RUN_PIKVM_UPDATE`. Selecting "none" reported "Cleared all module
+  selections" while leaving a full `pacman` upgrade armed, and `--pikvm-update --all` silently
+  kept it enabled. All three presets now set it explicitly; it stays opt-in via `--pikvm-update`
+  or menu key `i`.
+- `kvmd-vnc.service` was restarted twice per run when `--quality-cap` was used, once by the
+  module and again by `final_restart`. The module no longer restarts it directly.
+
+### Added
+
+- `--vnc-legacy-client` module (menu key `v`, config key `vnc_legacy_client`) — disables VNC
+  vencrypt for clients such as Screens that implement it incorrectly. Off in all presets.
+
 ## [1.4.3] - 2026-06-21
 
 ### Added
