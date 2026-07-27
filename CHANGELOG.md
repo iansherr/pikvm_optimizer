@@ -51,6 +51,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `kvmd-vnc.service` was restarted twice per run when `--quality-cap` was used, once by the
   module and again by `final_restart`. The module no longer restarts it directly.
 
+### Changed
+
+- **The config validation suite now actually runs.** It had never passed: `pip install kvmd`
+  does not install PiKVM's kvmd — the PyPI name is an abandoned 2018 daemon (v0.10) that raises
+  "This module can only be run on a Raspberry Pi!" on import, so the Config Validation CI job
+  failed on every run since it was added and no patch was ever really checked. This is why the
+  1.4.3 `vencrypt` path bug shipped unnoticed.
+  - `tests/validate_patches.sh` is replaced by `tests/validate_patches.py`, which drives kvmd's
+    real config engine directly instead of shelling out to the `kvmd` CLI (which cannot run off
+    a PiKVM — it imports the whole daemon and needs `ustreamer`, not published on PyPI).
+  - Patches are now checked for **effect**, not just validity: the suite asserts keys reach the
+    resolved config, which is what catches silently-ignored wrong paths.
+  - A regression case pins the 1.4.3 bug, asserting `vnc.vencrypt.enabled` stays inert.
+  - `tests/Dockerfile` and the CI workflow install kvmd from GitHub with the runtime imports its
+    `setup.py` omits, and run on Python 3.13. Only the six modules the config scheme actually
+    needs are installed (`pyyaml ruamel.yaml pygments evdev aiofiles aiohttp`); pulling in the
+    rest of kvmd's runtime deps drags in packages with no arm64 wheels that build from source.
+  - `tests/docker-test.sh` prefers BuildKit (`docker buildx build`); the deprecated legacy
+    builder fails silently on some daemons, producing no output and no image.
+
 ### Added
 
 - `--vnc-legacy-client` module (menu key `v`, config key `vnc_legacy_client`) — disables VNC
