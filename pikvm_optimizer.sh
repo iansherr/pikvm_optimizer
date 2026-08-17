@@ -2,12 +2,12 @@
 # ==============================================================================
 # PiKVM Optimizer
 # Single-file macOS/Linux launcher with embedded PiKVM remote optimizer.
-# Version: 1.4.4
+# Version: 1.4.5
 # ==============================================================================
 
 set -euo pipefail
 
-VERSION="1.4.4"
+VERSION="1.4.5"
 
 # ------------------------------------------------------------------------------
 # Local launcher options
@@ -694,7 +694,7 @@ ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "cat > $REMOTE_DEST_Q && chmod 700 
 set -euo pipefail
 set +e  # Disable exit-on-error; we handle errors manually
 
-REMOTE_VERSION="1.4.4"
+REMOTE_VERSION="1.4.5"
 
 # ------------------------------------------------------------------------------
 # Remote options
@@ -775,6 +775,7 @@ UN_INSTALL=false
 UN_SUDO=false
 UN_QUALITY_CAP=false
 UN_KEEPALIVE=false
+UN_VNC_LEGACY=false
 
 RUN_TAILSCALE_DIAG=false
 RUN_TAILSCALE_SETUP=false
@@ -1627,6 +1628,7 @@ rollback_changes() {
     $WIFI_EXECUTED &&                { left+="${sep}WiFi configuration"; sep=", "; }
     $TAILSCALE_CRASH_FIX_EXECUTED && { left+="${sep}Tailscale crash fix"; sep=", "; }
     $PIKVM_UPDATE_EXECUTED &&        { left+="${sep}PiKVM OS update"; sep=", "; }
+    $VNC_PASSWORD_SYNCED &&          { left+="${sep}VNC password sync (/etc/kvmd/vncpasswd, backups kept as .bak.*)"; sep=", "; }
 
     box_sep
     if [ -n "$reverted" ]; then
@@ -1694,6 +1696,30 @@ require_command() {
 service_exists() {
     local svc="$1"
     systemctl list-unit-files "$svc" >/dev/null 2>&1 || systemctl status "$svc" >/dev/null 2>&1
+}
+
+service_is_active() {
+    local svc="$1"
+    systemctl is-active --quiet "$svc" 2>/dev/null
+}
+
+# Restart a unit only if it is already running. `systemctl restart` starts an
+# inactive unit, which would turn a "pick up the new config" restart into a
+# "start a service the user does not want running" side effect.
+restart_service_if_active() {
+    local svc="$1"
+    local fatal="${2:-false}"
+
+    if [ "$DRY_RUN" = true ]; then
+        info "DRY RUN: would restart $svc if it is running."
+        return 0
+    fi
+
+    if ! service_is_active "$svc"; then
+        return 0
+    fi
+
+    restart_service_if_exists "$svc" "$fatal"
 }
 
 restart_service_if_exists() {
@@ -2387,6 +2413,7 @@ interactive_uninstall_menu() {
         box_line "[8] [$(yn_marker "$UN_INSTALL")] Remove on-device optimizer command"
         box_line "[9] [$(yn_marker "$UN_QUALITY_CAP")] Restore VNC server.py from backup"
         box_line "[0] [$(yn_marker "$UN_KEEPALIVE")] Remove TCP keepalive sysctl config"
+        box_line "[v] [$(yn_marker "$UN_VNC_LEGACY")] Re-enable VNC vencrypt (undo legacy client compat)"
         box_line ""
         box_line "[c] [$(yn_marker "$UN_TAILSCALE_CRASH_FIX")] Remove Tailscale crash fix (IPv6 sysctl + watchdog config)"
         box_line "[w] [$(yn_marker "$UN_WIFI")] Remove WiFi configuration"
@@ -2417,6 +2444,7 @@ interactive_uninstall_menu() {
             8) toggle_bool UN_INSTALL ;;
             9) toggle_bool UN_QUALITY_CAP ;;
             0) toggle_bool UN_KEEPALIVE ;;
+            v|V) toggle_bool UN_VNC_LEGACY ;;
             c|C) toggle_bool UN_TAILSCALE_CRASH_FIX ;;
             w|W) toggle_bool UN_WIFI ;;
             z|Z) toggle_bool UN_2FA ;;
@@ -2438,6 +2466,7 @@ interactive_uninstall_menu() {
                 UN_SUDO=false
                 UN_QUALITY_CAP=true
                 UN_KEEPALIVE=true
+                UN_VNC_LEGACY=true
                 UN_MSD_BIOS_FIX=true
                 UN_TAILSCALE_CRASH_FIX=true
                 UN_WIFI=true
@@ -2460,6 +2489,7 @@ interactive_uninstall_menu() {
                 UN_SUDO=false
                 UN_QUALITY_CAP=false
                 UN_KEEPALIVE=false
+                UN_VNC_LEGACY=false
                 UN_MSD_BIOS_FIX=false
                 UN_TAILSCALE_CRASH_FIX=false
                 UN_WIFI=false
@@ -2471,8 +2501,12 @@ interactive_uninstall_menu() {
                 UN_OVERRIDE_D=false
                 ;;
             q|Q)
+                # Back out. Switching MODE is the whole signal: the caller
+                # re-checks it and runs the module menu instead of the
+                # uninstall dispatch. Do NOT call interactive_module_menu from
+                # here — the caller does that, and calling it twice shows the
+                # menu twice.
                 MODE="optimize"
-                interactive_module_menu
                 return 0
                 ;;
             *)
@@ -3020,8 +3054,8 @@ apply_vnc_quality_cap() {
     fi
 
     # No restart here: final_restart restarts kvmd-vnc when RUN_QUALITY_CAP is
-    # set. uninstall_quality_cap still restarts directly, because the uninstall
-    # dispatch exits before final_restart is reached.
+    # set. uninstall_quality_cap restarts directly because RUN_QUALITY_CAP is
+    # false during an uninstall, so final_restart would not cover it.
 }
 
 apply_vnc_legacy_client() {
@@ -4152,6 +4186,10 @@ sync_vnc_password() {
 
     if [ "$DRY_RUN" = true ]; then
         ok "DRY RUN: would write the admin password to $vncpass."
+        # Claim the sync so enable_vnc_service previews the real run's outcome.
+        # Without this it reads the untouched file, still finds the shipped
+        # default, and previews a refusal the real run would never print.
+        VNC_PASSWORD_SYNCED=true
         return 0
     fi
 
@@ -4709,18 +4747,32 @@ apply_override_d() {
 
 uninstall_core_config() {
     info "Removing optimizer-managed core YAML keys..."
+    # vnc.auth.vencrypt.enabled is NOT listed here: since 1.4.4 it belongs to
+    # --vnc-legacy-client, and deleting it from under that module would silently
+    # re-enable vencrypt and break the legacy clients it was turned off for.
+    # uninstall_vnc_legacy_client owns it. vnc.vencrypt stays because core is
+    # what wrote that stray key in 1.4.3.
     delete_yaml_paths \
         kvmd.streamer.h264_gop \
         kvmd.streamer.quality \
         kvmd.streamer.h264_bitrate \
         vnc.auth.vncauth.enabled \
-        vnc.auth.vencrypt.enabled \
         vnc.vencrypt
 
     if [ -f /etc/kvmd/vncpasswd ]; then
         warn "/etc/kvmd/vncpasswd was not reverted; it may still hold the synced admin password."
         box_line "Earlier copies are kept as /etc/kvmd/vncpasswd.bak.* if you need to restore one."
     fi
+}
+
+# Reverts --vnc-legacy-client by dropping the override, which returns kvmd to
+# its own default (vencrypt enabled). Legacy clients that need it off will stop
+# connecting again — that is the point of the uninstall.
+uninstall_vnc_legacy_client() {
+    info "Restoring VNC vencrypt (kvmd default)..."
+    delete_yaml_paths vnc.auth.vencrypt.enabled
+    box_line "VNC TLS is enabled again. Clients that need vencrypt off (Screens,"
+    box_line "older viewers) will need --vnc-legacy-client to reconnect."
 }
 
 uninstall_mtu() {
@@ -4794,7 +4846,7 @@ uninstall_quality_cap() {
     make_rw
     cp "$latest_backup" "$server_py"
     ok "Restored $server_py from backup $latest_backup."
-    restart_service_if_exists kvmd-vnc.service
+    restart_service_if_active kvmd-vnc.service
 }
 
 uninstall_ssl() {
@@ -4996,6 +5048,56 @@ uninstall_override_d() {
     ok "Removed /etc/kvmd/override.d/ directory."
 }
 
+# Runs every selected UN_* operation and exits. Callers must re-check MODE after
+# interactive_uninstall_menu returns before calling this: "q" backs out of that
+# menu by setting MODE=optimize, and running the dispatch anyway would uninstall
+# things the user just declined to uninstall.
+run_uninstall_dispatch() {
+    draw "UNINSTALL / CLEANUP"
+
+    if [ "$YES" != true ]; then
+        box_prefix; printf "Apply selected uninstall/cleanup operations? [y/N]: "
+        read -r confirm
+        case "$confirm" in
+            y|Y) ;;
+            *) warn "Uninstall cancelled."; close_box; SUCCESS=true; make_ro; exit 0 ;;
+        esac
+    fi
+
+    if [ "$UN_CORE" = true ]; then uninstall_core_config; fi
+    if [ "$UN_VNC_LEGACY" = true ]; then uninstall_vnc_legacy_client; fi
+    if [ "$UN_QUALITY_CAP" = true ]; then uninstall_quality_cap; fi
+    if [ "$UN_MTU" = true ]; then uninstall_mtu; fi
+    if [ "$UN_KEEPALIVE" = true ]; then uninstall_tcp_keepalive; fi
+    if [ "$UN_EDID" = true ]; then uninstall_edid; fi
+    if [ "$UN_SSL" = true ]; then uninstall_ssl; fi
+    if [ "$UN_FAN" = true ]; then uninstall_fan; fi
+    if [ "$UN_WATCHDOG" = true ]; then uninstall_watchdog; fi
+    if [ "$UN_KEY" = true ]; then uninstall_ssh_key; fi
+    if [ "$UN_INSTALL" = true ]; then uninstall_on_device_optimizer; fi
+    if [ "$UN_SUDO" = true ]; then uninstall_sudoers; fi
+    if [ "$UN_MSD_BIOS_FIX" = true ]; then uninstall_msd_bios_fix; fi
+    if [ "$UN_TAILSCALE_CRASH_FIX" = true ]; then uninstall_tailscale_crash_fix; fi
+    if [ "$UN_WIFI" = true ]; then uninstall_wifi; fi
+    if [ "$UN_2FA" = true ]; then uninstall_2fa; fi
+    if [ "$UN_USB_PRESET" = true ]; then uninstall_usb_preset; fi
+    if [ "$UN_USB_EXTRA" = true ]; then uninstall_usb_extra; fi
+    if [ "$UN_MSD_STORAGE" = true ]; then uninstall_msd_storage; fi
+    if [ "$UN_MSD_DRIVES" = true ]; then uninstall_msd_drives; fi
+    if [ "$UN_OVERRIDE_D" = true ]; then uninstall_override_d; fi
+
+    final_restart || true
+
+    SUCCESS=true
+    make_ro
+
+    box_line ""
+    box_line "${G}[DONE]${RESET} Uninstall/cleanup finished."
+    rollback_hint
+    close_box
+    exit 0
+}
+
 restore_from_backup() {
     draw "RESTORE CONFIG BACKUP"
 
@@ -5187,7 +5289,7 @@ final_restart() {
         fi
         if [ "${RUN_CORE:-false}" = true ] || [ "${RUN_VNC_LEGACY:-false}" = true ] \
             || [ "${RUN_QUALITY_CAP:-false}" = true ]; then
-            ok "DRY RUN: would restart kvmd-vnc.service if present."
+            ok "DRY RUN: would restart kvmd-vnc.service if it is running."
         fi
         return 0
     fi
@@ -5199,9 +5301,17 @@ final_restart() {
         restart_service_if_exists kvmd-nginx.service false
     fi
 
+    # Restart-if-active, never restart-to-start. enable_vnc_service already ran
+    # by this point and is the only thing allowed to bring kvmd-vnc up, and it
+    # refuses while /etc/kvmd/vncpasswd still holds kvmd's shipped password. A
+    # plain `systemctl restart` here would start the unit anyway and put a VNC
+    # listener on :5900 with the public password "admin" — the exact hole
+    # enable_vnc_service exists to close. An inactive unit at this point means
+    # either that gate refused or the user keeps VNC off deliberately; both are
+    # reasons to leave it alone.
     if [ "${RUN_CORE:-false}" = true ] || [ "${RUN_VNC_LEGACY:-false}" = true ] \
         || [ "${RUN_QUALITY_CAP:-false}" = true ]; then
-        restart_service_if_exists kvmd-vnc.service false
+        restart_service_if_active kvmd-vnc.service false
     fi
 
     # Post-run reboot warning for modules that benefit from reboot
@@ -5298,96 +5408,36 @@ backup_config
 close_box
 sleep 0.5
 
+# BEGIN uninstall-dispatch-flow
+# tests/validate_logic.sh extracts everything between these two markers and runs
+# it with the menus stubbed. Keep them in place; the tests fail loudly if either
+# marker goes missing, but they cannot detect edits made outside the markers.
+#
+# --uninstall on the command line. The menu may hand control back with
+# MODE=optimize ("q" = back out), which drops through to the module menu below.
+if [ "$MODE" = "uninstall" ] && [ "$YES" != true ]; then
+    interactive_uninstall_menu
+fi
+
 if [ "$MODE" = "uninstall" ]; then
-    if [ "$YES" != true ]; then
-        interactive_uninstall_menu
-    fi
-
-    draw "UNINSTALL / CLEANUP"
-
-    if [ "$UN_CORE" = true ]; then uninstall_core_config; fi
-    if [ "$UN_QUALITY_CAP" = true ]; then uninstall_quality_cap; fi
-    if [ "$UN_MTU" = true ]; then uninstall_mtu; fi
-    if [ "$UN_KEEPALIVE" = true ]; then uninstall_tcp_keepalive; fi
-    if [ "$UN_EDID" = true ]; then uninstall_edid; fi
-    if [ "$UN_SSL" = true ]; then uninstall_ssl; fi
-    if [ "$UN_FAN" = true ]; then uninstall_fan; fi
-    if [ "$UN_WATCHDOG" = true ]; then uninstall_watchdog; fi
-    if [ "$UN_KEY" = true ]; then uninstall_ssh_key; fi
-    if [ "$UN_INSTALL" = true ]; then uninstall_on_device_optimizer; fi
-    if [ "$UN_SUDO" = true ]; then uninstall_sudoers; fi
-    if [ "$UN_MSD_BIOS_FIX" = true ]; then uninstall_msd_bios_fix; fi
-    if [ "$UN_TAILSCALE_CRASH_FIX" = true ]; then uninstall_tailscale_crash_fix; fi
-    if [ "$UN_WIFI" = true ]; then uninstall_wifi; fi
-    if [ "$UN_2FA" = true ]; then uninstall_2fa; fi
-    if [ "$UN_USB_PRESET" = true ]; then uninstall_usb_preset; fi
-    if [ "$UN_USB_EXTRA" = true ]; then uninstall_usb_extra; fi
-    if [ "$UN_MSD_STORAGE" = true ]; then uninstall_msd_storage; fi
-    if [ "$UN_MSD_DRIVES" = true ]; then uninstall_msd_drives; fi
-    if [ "$UN_OVERRIDE_D" = true ]; then uninstall_override_d; fi
-
-    final_restart
-
-    SUCCESS=true
-    make_ro
-
-    box_line ""
-    box_line "${G}[DONE]${RESET} Uninstall/cleanup finished."
-    rollback_hint
-    close_box
-    exit 0
+    run_uninstall_dispatch
 fi
 
 if [ "$YES" != true ] && [ "$FLAGS_PROVIDED" != true ]; then
     interactive_module_menu
 fi
 
-if [ "$MODE" = "uninstall" ]; then
+# "u" in the module menu. Same contract: re-check MODE after the menu returns.
+while [ "$MODE" = "uninstall" ]; do
     interactive_uninstall_menu
-    draw "UNINSTALL / CLEANUP"
 
-    # Confirm before executing destructive changes
-    if [ "$YES" != true ]; then
-        box_prefix; printf "Apply selected uninstall/cleanup operations? [y/N]: "
-        read -r confirm
-        case "$confirm" in
-            y|Y) ;;
-            *) warn "Uninstall cancelled."; close_box; SUCCESS=true; make_ro; exit 0 ;;
-        esac
+    if [ "$MODE" = "uninstall" ]; then
+        run_uninstall_dispatch
     fi
 
-    if [ "$UN_CORE" = true ]; then uninstall_core_config; fi
-    if [ "$UN_QUALITY_CAP" = true ]; then uninstall_quality_cap; fi
-    if [ "$UN_MTU" = true ]; then uninstall_mtu; fi
-    if [ "$UN_KEEPALIVE" = true ]; then uninstall_tcp_keepalive; fi
-    if [ "$UN_EDID" = true ]; then uninstall_edid; fi
-    if [ "$UN_SSL" = true ]; then uninstall_ssl; fi
-    if [ "$UN_FAN" = true ]; then uninstall_fan; fi
-    if [ "$UN_WATCHDOG" = true ]; then uninstall_watchdog; fi
-    if [ "$UN_KEY" = true ]; then uninstall_ssh_key; fi
-    if [ "$UN_INSTALL" = true ]; then uninstall_on_device_optimizer; fi
-    if [ "$UN_SUDO" = true ]; then uninstall_sudoers; fi
-    if [ "$UN_MSD_BIOS_FIX" = true ]; then uninstall_msd_bios_fix; fi
-    if [ "$UN_TAILSCALE_CRASH_FIX" = true ]; then uninstall_tailscale_crash_fix; fi
-    if [ "$UN_WIFI" = true ]; then uninstall_wifi; fi
-    if [ "$UN_2FA" = true ]; then uninstall_2fa; fi
-    if [ "$UN_USB_PRESET" = true ]; then uninstall_usb_preset; fi
-    if [ "$UN_USB_EXTRA" = true ]; then uninstall_usb_extra; fi
-    if [ "$UN_MSD_STORAGE" = true ]; then uninstall_msd_storage; fi
-    if [ "$UN_MSD_DRIVES" = true ]; then uninstall_msd_drives; fi
-    if [ "$UN_OVERRIDE_D" = true ]; then uninstall_override_d; fi
-
-    final_restart || true
-
-    SUCCESS=true
-    make_ro
-
-    box_line ""
-    box_line "${G}[DONE]${RESET} Uninstall/cleanup finished."
-    rollback_hint
-    close_box
-    exit 0
-fi
+    interactive_module_menu
+done
+# END uninstall-dispatch-flow
 
 if [ "$MODE" = "health" ]; then
     health_check
