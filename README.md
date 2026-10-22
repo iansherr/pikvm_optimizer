@@ -152,6 +152,7 @@ Notes:
 | `--fan` | Fan curve configuration |
 | `--watchdog` | Tailscale watchdog timer |
 | `--quality-cap` | VNC JPEG quality cap for viewer compatibility |
+| `--vnc-legacy-client` | Disable VNC vencrypt for legacy clients (Screens, older viewers). **Disables TLS for VNC** — passwords and screen contents cross the network in cleartext. Use only on a trusted network or over Tailscale/VPN |
 | `--keepalive` | TCP keepalive tuning for Tailscale stability |
 | `--tailscale-diag` | Read-only Tailscale networking diagnosis |
 | `--tailscale-setup` | Install/enable Tailscale and run `tailscale up` (auto-retries with DB refresh and curl fallback) |
@@ -282,7 +283,19 @@ Contributions are welcome. Please keep changes focused and test the launcher plu
 2. Create a feature branch.
 3. Run `bash -n pikvm_optimizer.sh`.
 4. Run `./pikvm_optimizer.sh --print-remote > /tmp/pikvm-optimizer-remote.sh && bash -n /tmp/pikvm-optimizer-remote.sh`.
-5. Commit your changes and open a pull request.
+5. Run the test suites (see below).
+6. Commit your changes and open a pull request.
+
+### Tests
+
+| Suite | Command | Needs |
+|-------|---------|-------|
+| Config patches — validates every module's YAML against kvmd's real config engine | `bash tests/docker-test.sh` | Docker |
+| Control flow — guards the VNC service gate and the uninstall-menu branches | `bash tests/validate_logic.sh` | nothing |
+
+`tests/validate_logic.sh` pulls function bodies straight out of the embedded
+remote script, so it tests shipped code rather than a copy of it. Neither suite
+needs a PiKVM.
 
 ## Versioning
 

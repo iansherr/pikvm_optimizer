@@ -22,19 +22,27 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.14'
+          python-version: '3.13'
 
+      # NOTE: `pip install kvmd` installs the WRONG package -- the PyPI name is
+      # an abandoned 2018 daemon that refuses to import off a Raspberry Pi. That
+      # is why this job failed on every run before 1.4.4. Install from GitHub,
+      # plus the runtime imports kvmd's setup.py does not declare.
       - name: Install kvmd
-        run: pip install kvmd
+        run: |
+          pip install \
+            git+https://github.com/pikvm/kvmd \
+            pyyaml ruamel.yaml pygments evdev aiofiles aiohttp
 
       - name: Download platform-specific main.yaml
         run: |
-          mkdir -p /usr/lib/kvmd /etc/kvmd/override.d
+          sudo mkdir -p /usr/lib/kvmd /etc/kvmd/override.d
+          sudo chown -R "$USER" /usr/lib/kvmd /etc/kvmd
           curl -sSL -o /usr/lib/kvmd/main.yaml \
             https://raw.githubusercontent.com/pikvm/kvmd/master/configs/kvmd/main/v4plus-hdmi-rpi4.yaml
 
       - name: Run patch validation suite
-        run: bash tests/validate_patches.sh
+        run: python tests/validate_patches.py
 
       - name: Run shell syntax check
         run: bash -n pikvm_optimizer.sh

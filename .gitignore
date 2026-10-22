@@ -26,6 +26,10 @@ Thumbs.db
 *.backup
 *.orig
 
+# Python (tests/validate_patches.py)
+__pycache__/
+*.py[cod]
+
 # Local configuration
 .env
 .env.local
