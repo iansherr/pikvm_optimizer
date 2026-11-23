@@ -22,19 +22,33 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.14'
+          python-version: '3.13'
 
+      # NOTE: `pip install kvmd` installs the WRONG package -- the PyPI name is
+      # an abandoned 2018 daemon that refuses to import off a Raspberry Pi. That
+      # is why this job failed on every run before 1.4.4. Install from GitHub,
+      # plus the runtime imports kvmd's setup.py does not declare.
+      #
+      # The ref is pinned on purpose: a bare `git+https://github.com/pikvm/kvmd`
+      # floats with upstream `master`, which moved on after v4.206 and broke the
+      # import (`NbdClient` became TYPE_CHECKING-guarded with no postponed
+      # evaluation, so `import kvmd.apps` dies with NameError). The suite was
+      # validated against v4.206; keep it pinned until upstream fixes the import.
       - name: Install kvmd
-        run: pip install kvmd
+        run: |
+          pip install \
+            git+https://github.com/pikvm/kvmd@v4.206 \
+            pyyaml ruamel.yaml pygments evdev aiofiles aiohttp
 
       - name: Download platform-specific main.yaml
         run: |
-          mkdir -p /usr/lib/kvmd /etc/kvmd/override.d
+          sudo mkdir -p /usr/lib/kvmd /etc/kvmd/override.d
+          sudo chown -R "$USER" /usr/lib/kvmd /etc/kvmd
           curl -sSL -o /usr/lib/kvmd/main.yaml \
             https://raw.githubusercontent.com/pikvm/kvmd/master/configs/kvmd/main/v4plus-hdmi-rpi4.yaml
 
       - name: Run patch validation suite
-        run: bash tests/validate_patches.sh
+        run: python tests/validate_patches.py
 
       - name: Run shell syntax check
         run: bash -n pikvm_optimizer.sh

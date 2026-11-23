@@ -2,12 +2,12 @@
 # ==============================================================================
 # PiKVM Optimizer
 # Single-file macOS/Linux launcher with embedded PiKVM remote optimizer.
-# Version: 1.4.3
+# Version: 1.4.5
 # ==============================================================================
 
 set -euo pipefail
 
-VERSION="1.4.3"
+VERSION="1.4.5"
 
 # ------------------------------------------------------------------------------
 # Local launcher options
@@ -84,6 +84,7 @@ modules:
   fan: false
   watchdog: false
   quality_cap: false
+  vnc_legacy_client: false
   keepalive: false
   tailscale_diag: false
   tailscale_setup: false
@@ -202,6 +203,7 @@ module_flags = {
     "fan": "--fan",
     "watchdog": "--watchdog",
     "quality_cap": "--quality-cap",
+    "vnc_legacy_client": "--vnc-legacy-client",
     "keepalive": "--keepalive",
     "tailscale_diag": "--tailscale-diag",
     "tailscale_setup": "--tailscale-setup",
@@ -284,6 +286,7 @@ Module flags:
   --fan              Enable fan curve module
   --watchdog         Enable Tailscale watchdog module
   --quality-cap      Enable VNC JPEG quality cap (fixes Screens client issues)
+  --vnc-legacy-client  Disable VNC vencrypt for legacy clients (DISABLES VNC TLS)
   --keepalive        Enable TCP keepalive tuning for Tailscale stability
   --tailscale-diag   Run Tailscale networking diagnosis (read-only)
   --tailscale-setup  Install/enable Tailscale and run tailscale up
@@ -429,7 +432,7 @@ while [ "$#" -gt 0 ]; do
             REMOTE_ARGS+=(--none)
             shift
             ;;
-        --core|--no-core|--mtu|--edid|--ssl|--fan|--watchdog|--key|--install|--sudo|--quality-cap|--keepalive|--tailscale-diag|--tailscale-setup|--tailscale-crash-fix|--pikvm-update|--wifi|--root-password|--2fa|--first-run|--msd-bios-fix|--usb-preset|--usb-extra|--msd-storage|--msd-drives|--override-d)
+        --core|--no-core|--mtu|--edid|--ssl|--fan|--watchdog|--key|--install|--sudo|--quality-cap|--vnc-legacy-client|--keepalive|--tailscale-diag|--tailscale-setup|--tailscale-crash-fix|--pikvm-update|--wifi|--root-password|--2fa|--first-run|--msd-bios-fix|--usb-preset|--usb-extra|--msd-storage|--msd-drives|--override-d)
             REMOTE_ARGS+=("$1")
             shift
             ;;
@@ -691,7 +694,7 @@ ssh "${SSH_OPTS[@]}" "${PI_USER}@${PI_HOST}" "cat > $REMOTE_DEST_Q && chmod 700 
 set -euo pipefail
 set +e  # Disable exit-on-error; we handle errors manually
 
-REMOTE_VERSION="1.4.2"
+REMOTE_VERSION="1.4.5"
 
 # ------------------------------------------------------------------------------
 # Remote options
@@ -758,6 +761,7 @@ RUN_KEY=false
 RUN_INSTALL=false
 RUN_SUDO=false
 RUN_QUALITY_CAP=false
+RUN_VNC_LEGACY=false
 RUN_KEEPALIVE=false
 
 UN_CORE=false
@@ -771,6 +775,7 @@ UN_INSTALL=false
 UN_SUDO=false
 UN_QUALITY_CAP=false
 UN_KEEPALIVE=false
+UN_VNC_LEGACY=false
 
 RUN_TAILSCALE_DIAG=false
 RUN_TAILSCALE_SETUP=false
@@ -840,10 +845,12 @@ while [ "$#" -gt 0 ]; do
             RUN_INSTALL=false
             RUN_SUDO=false
             RUN_QUALITY_CAP=false
+            RUN_VNC_LEGACY=false
             RUN_KEEPALIVE=false
             RUN_TAILSCALE_DIAG=false
             RUN_TAILSCALE_SETUP=false
             RUN_TAILSCALE_CRASH_FIX=false
+            RUN_PIKVM_UPDATE=false
             RUN_WIFI=false
             RUN_ROOT_PASSWORD=false
             RUN_2FA=false
@@ -868,10 +875,12 @@ while [ "$#" -gt 0 ]; do
             RUN_INSTALL=true
             RUN_SUDO=false
             RUN_QUALITY_CAP=true
+            RUN_VNC_LEGACY=false
             RUN_KEEPALIVE=true
             RUN_TAILSCALE_DIAG=true
             RUN_TAILSCALE_SETUP=false
             RUN_TAILSCALE_CRASH_FIX=true
+            RUN_PIKVM_UPDATE=false
             RUN_WIFI=false
             RUN_ROOT_PASSWORD=false
             RUN_2FA=false
@@ -897,10 +906,12 @@ while [ "$#" -gt 0 ]; do
             RUN_INSTALL=false
             RUN_SUDO=false
             RUN_QUALITY_CAP=false
+            RUN_VNC_LEGACY=false
             RUN_KEEPALIVE=false
             RUN_TAILSCALE_DIAG=false
             RUN_TAILSCALE_SETUP=false
             RUN_TAILSCALE_CRASH_FIX=false
+            RUN_PIKVM_UPDATE=false
             RUN_WIFI=false
             RUN_ROOT_PASSWORD=false
             RUN_2FA=false
@@ -951,6 +962,11 @@ while [ "$#" -gt 0 ]; do
             ;;
         --quality-cap)
             RUN_QUALITY_CAP=true
+            FLAGS_PROVIDED=true
+            shift
+            ;;
+        --vnc-legacy-client)
+            RUN_VNC_LEGACY=true
             FLAGS_PROVIDED=true
             shift
             ;;
@@ -1185,6 +1201,7 @@ OVERRIDE_D_CHANGED=false
 ROOT_PASSWORD_EXECUTED=false
 ADMIN_PASSWORD_EXECUTED=false
 ADMIN_PASSWORD=""
+VNC_PASSWORD_SYNCED=false
 TFA_EXECUTED=false
 TAILSCALE_SETUP_EXECUTED=false
 WIFI_EXECUTED=false
@@ -1611,6 +1628,7 @@ rollback_changes() {
     $WIFI_EXECUTED &&                { left+="${sep}WiFi configuration"; sep=", "; }
     $TAILSCALE_CRASH_FIX_EXECUTED && { left+="${sep}Tailscale crash fix"; sep=", "; }
     $PIKVM_UPDATE_EXECUTED &&        { left+="${sep}PiKVM OS update"; sep=", "; }
+    $VNC_PASSWORD_SYNCED &&          { left+="${sep}VNC password sync (/etc/kvmd/vncpasswd, backups kept as .bak.*)"; sep=", "; }
 
     box_sep
     if [ -n "$reverted" ]; then
@@ -1680,6 +1698,30 @@ service_exists() {
     systemctl list-unit-files "$svc" >/dev/null 2>&1 || systemctl status "$svc" >/dev/null 2>&1
 }
 
+service_is_active() {
+    local svc="$1"
+    systemctl is-active --quiet "$svc" 2>/dev/null
+}
+
+# Restart a unit only if it is already running. `systemctl restart` starts an
+# inactive unit, which would turn a "pick up the new config" restart into a
+# "start a service the user does not want running" side effect.
+restart_service_if_active() {
+    local svc="$1"
+    local fatal="${2:-false}"
+
+    if [ "$DRY_RUN" = true ]; then
+        info "DRY RUN: would restart $svc if it is running."
+        return 0
+    fi
+
+    if ! service_is_active "$svc"; then
+        return 0
+    fi
+
+    restart_service_if_exists "$svc" "$fatal"
+}
+
 restart_service_if_exists() {
     local svc="$1"
     local fatal="${2:-false}"
@@ -1715,6 +1757,47 @@ enable_service_if_exists() {
     else
         warn "Service $svc not found; skipped enable."
     fi
+}
+
+# True (0) when /etc/kvmd/vncpasswd still holds the password kvmd ships with.
+# kvmd's stock file is comment lines plus the single entry "admin"; starting
+# kvmd-vnc in that state puts a VNC listener on :5900 with a known password.
+vncpasswd_is_default() {
+    local file="/etc/kvmd/vncpasswd"
+
+    if [ ! -f "$file" ]; then
+        return 0
+    fi
+
+    local cleaned
+    cleaned="$(grep -v '^[[:space:]]*#' "$file" | sed '/^[[:space:]]*$/d' || true)"
+
+    case "$cleaned" in
+        ""|"admin")
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# True (0) when override.yaml carries the stray top-level vnc.vencrypt key that
+# optimizer 1.4.3 wrote. The real kvmd path is vnc.auth.vencrypt.enabled, so the
+# 1.4.3 key was silently ignored by kvmd and needs cleaning up.
+vnc_stray_vencrypt_present() {
+    python_yaml_available || return 1
+    [ -f "$CONFIG_FILE" ] || return 1
+
+    python3 - "$CONFIG_FILE" <<'PY' >/dev/null 2>&1
+import sys, yaml
+try:
+    data = yaml.safe_load(open(sys.argv[1]).read()) or {}
+except Exception:
+    sys.exit(1)
+vnc = data.get("vnc")
+sys.exit(0 if isinstance(vnc, dict) and "vencrypt" in vnc else 1)
+PY
 }
 
 validate_kvmd_config() {
@@ -2137,10 +2220,12 @@ apply_recommended_preset() {
     RUN_INSTALL=false
     RUN_SUDO=false
     RUN_QUALITY_CAP=false
+    RUN_VNC_LEGACY=false
     RUN_KEEPALIVE=false
     RUN_TAILSCALE_DIAG=false
     RUN_TAILSCALE_SETUP=false
     RUN_TAILSCALE_CRASH_FIX=false
+    RUN_PIKVM_UPDATE=false
     RUN_WIFI=false
     RUN_ROOT_PASSWORD=false
     RUN_2FA=false
@@ -2165,10 +2250,12 @@ apply_all_preset() {
     RUN_INSTALL=true
     RUN_SUDO=false
     RUN_QUALITY_CAP=true
+    RUN_VNC_LEGACY=false
     RUN_KEEPALIVE=true
     RUN_TAILSCALE_DIAG=true
     RUN_TAILSCALE_SETUP=false
     RUN_TAILSCALE_CRASH_FIX=true
+    RUN_PIKVM_UPDATE=false
     RUN_WIFI=false
     RUN_ROOT_PASSWORD=false
     RUN_2FA=false
@@ -2193,10 +2280,12 @@ apply_none_preset() {
     RUN_INSTALL=false
     RUN_SUDO=false
     RUN_QUALITY_CAP=false
+    RUN_VNC_LEGACY=false
     RUN_KEEPALIVE=false
     RUN_TAILSCALE_DIAG=false
     RUN_TAILSCALE_SETUP=false
     RUN_TAILSCALE_CRASH_FIX=false
+    RUN_PIKVM_UPDATE=false
     RUN_WIFI=false
     RUN_ROOT_PASSWORD=false
     RUN_2FA=false
@@ -2228,11 +2317,12 @@ interactive_module_menu() {
         box_line "[8] [$(yn_marker "$RUN_INSTALL")] Install/update on-device optimizer command"
         box_line "[9] [$(yn_marker "$RUN_QUALITY_CAP")] VNC JPEG quality cap (Screens fix)"
         box_line "[0] [$(yn_marker "$RUN_KEEPALIVE")] TCP keepalive tuning (Tailscale)"
+        box_line "[v] [$(yn_marker "$RUN_VNC_LEGACY")] Legacy VNC client compat (disables VNC TLS)"
         box_line ""
         box_line "[t] [$(yn_marker "$RUN_TAILSCALE_DIAG")] Tailscale networking diagnosis (read-only)"
         box_line "[g] [$(yn_marker "$RUN_TAILSCALE_SETUP")] Tailscale install/login setup"
         box_line "[c] [$(yn_marker "$RUN_TAILSCALE_CRASH_FIX")] Tailscale crash fix (32-bit ARM mitigations)"
-        box_line "[u] [$(yn_marker "$RUN_PIKVM_UPDATE")] PiKVM OS update (refresh DB, upgrade all packages)"
+        box_line "[i] [$(yn_marker "$RUN_PIKVM_UPDATE")] PiKVM OS update (refresh DB, upgrade all packages)"
         box_line "[w] [$(yn_marker "$RUN_WIFI")] WiFi configuration (AP + client)"
         box_line "[x] [$(yn_marker "$RUN_ROOT_PASSWORD")] Change root password"
         box_line "[z] [$(yn_marker "$RUN_2FA")] Two-factor authentication (TOTP)"
@@ -2263,10 +2353,11 @@ interactive_module_menu() {
             8) toggle_bool RUN_INSTALL ;;
             9) toggle_bool RUN_QUALITY_CAP ;;
             0) toggle_bool RUN_KEEPALIVE ;;
+            v|V) toggle_bool RUN_VNC_LEGACY ;;
             t|T) toggle_bool RUN_TAILSCALE_DIAG ;;
             g|G) toggle_bool RUN_TAILSCALE_SETUP ;;
             c|C) toggle_bool RUN_TAILSCALE_CRASH_FIX ;;
-            u|U) toggle_bool RUN_PIKVM_UPDATE ;;
+            i|I) toggle_bool RUN_PIKVM_UPDATE ;;
             w|W) toggle_bool RUN_WIFI ;;
             x|X) toggle_bool RUN_ROOT_PASSWORD ;;
             z|Z) toggle_bool RUN_2FA ;;
@@ -2322,6 +2413,7 @@ interactive_uninstall_menu() {
         box_line "[8] [$(yn_marker "$UN_INSTALL")] Remove on-device optimizer command"
         box_line "[9] [$(yn_marker "$UN_QUALITY_CAP")] Restore VNC server.py from backup"
         box_line "[0] [$(yn_marker "$UN_KEEPALIVE")] Remove TCP keepalive sysctl config"
+        box_line "[v] [$(yn_marker "$UN_VNC_LEGACY")] Re-enable VNC vencrypt (undo legacy client compat)"
         box_line ""
         box_line "[c] [$(yn_marker "$UN_TAILSCALE_CRASH_FIX")] Remove Tailscale crash fix (IPv6 sysctl + watchdog config)"
         box_line "[w] [$(yn_marker "$UN_WIFI")] Remove WiFi configuration"
@@ -2352,6 +2444,7 @@ interactive_uninstall_menu() {
             8) toggle_bool UN_INSTALL ;;
             9) toggle_bool UN_QUALITY_CAP ;;
             0) toggle_bool UN_KEEPALIVE ;;
+            v|V) toggle_bool UN_VNC_LEGACY ;;
             c|C) toggle_bool UN_TAILSCALE_CRASH_FIX ;;
             w|W) toggle_bool UN_WIFI ;;
             z|Z) toggle_bool UN_2FA ;;
@@ -2373,6 +2466,7 @@ interactive_uninstall_menu() {
                 UN_SUDO=false
                 UN_QUALITY_CAP=true
                 UN_KEEPALIVE=true
+                UN_VNC_LEGACY=true
                 UN_MSD_BIOS_FIX=true
                 UN_TAILSCALE_CRASH_FIX=true
                 UN_WIFI=true
@@ -2395,6 +2489,7 @@ interactive_uninstall_menu() {
                 UN_SUDO=false
                 UN_QUALITY_CAP=false
                 UN_KEEPALIVE=false
+                UN_VNC_LEGACY=false
                 UN_MSD_BIOS_FIX=false
                 UN_TAILSCALE_CRASH_FIX=false
                 UN_WIFI=false
@@ -2406,8 +2501,12 @@ interactive_uninstall_menu() {
                 UN_OVERRIDE_D=false
                 ;;
             q|Q)
+                # Back out. Switching MODE is the whole signal: the caller
+                # re-checks it and runs the module menu instead of the
+                # uninstall dispatch. Do NOT call interactive_module_menu from
+                # here — the caller does that, and calling it twice shows the
+                # menu twice.
                 MODE="optimize"
-                interactive_module_menu
                 return 0
                 ;;
             *)
@@ -2444,25 +2543,16 @@ vnc:
     auth:
         vncauth:
             enabled: true
-    vencrypt:
-        enabled: false
 EOF
 
     merge_yaml_patch "$patch"
 
-    if [ "$DRY_RUN" = true ]; then
-        ok "DRY RUN: would enable kvmd-vnc service."
-        [ -n "$ADMIN_PASSWORD" ] && ok "DRY RUN: would sync admin password to VNC."
-    else
-        systemctl enable --now kvmd-vnc.service >/dev/null 2>&1 || warn "Could not enable kvmd-vnc.service."
-        if [ -n "$ADMIN_PASSWORD" ]; then
-            make_rw
-            printf '%s\n' "$ADMIN_PASSWORD" > /etc/kvmd/vncpasswd
-            chown kvmd-vnc:kvmd-vnc /etc/kvmd/vncpasswd
-            chmod 600 /etc/kvmd/vncpasswd
-            ok "Admin password synced to VNC."
-            restart_service_if_exists kvmd-vnc.service
-        fi
+    # Optimizer 1.4.3 wrote vnc.vencrypt.enabled, which is not a kvmd config
+    # path (the real one is vnc.auth.vencrypt.enabled) and was therefore
+    # silently ignored. Clean it up so it stops sitting dead in override.yaml.
+    if vnc_stray_vencrypt_present; then
+        info "Removing stray vnc.vencrypt key left by optimizer 1.4.3..."
+        delete_yaml_paths vnc.vencrypt
     fi
 }
 
@@ -2963,7 +3053,29 @@ apply_vnc_quality_cap() {
         fi
     fi
 
-    restart_service_if_exists kvmd-vnc.service
+    # No restart here: final_restart restarts kvmd-vnc when RUN_QUALITY_CAP is
+    # set. uninstall_quality_cap restarts directly because RUN_QUALITY_CAP is
+    # false during an uninstall, so final_restart would not cover it.
+}
+
+apply_vnc_legacy_client() {
+    info "Disabling VNC vencrypt for legacy client compatibility..."
+    box_line "Some clients (Screens, older VNC viewers) implement vencrypt incorrectly"
+    box_line "and cannot connect while it is enabled."
+    warn "This disables TLS for VNC: passwords and screen contents cross the"
+    warn "network in cleartext. Only use this on a trusted network, or reach the"
+    warn "PiKVM over Tailscale/VPN instead."
+
+    local patch="/tmp/pikvm-optimizer.vnc-legacy.yaml"
+
+    cat > "$patch" <<'EOF'
+vnc:
+    auth:
+        vencrypt:
+            enabled: false
+EOF
+
+    merge_yaml_patch "$patch"
 }
 
 apply_tcp_keepalive() {
@@ -4061,6 +4173,77 @@ apply_first_run() {
     fi
 }
 
+# Copy the admin password set by apply_first_run into the VNC password file.
+# Must run after apply_first_run (Group 6) — ADMIN_PASSWORD is empty before it.
+sync_vnc_password() {
+    if [ -z "$ADMIN_PASSWORD" ]; then
+        return 0
+    fi
+
+    info "Syncing admin password to VNC..."
+
+    local vncpass="/etc/kvmd/vncpasswd"
+
+    if [ "$DRY_RUN" = true ]; then
+        ok "DRY RUN: would write the admin password to $vncpass."
+        # Claim the sync so enable_vnc_service previews the real run's outcome.
+        # Without this it reads the untouched file, still finds the shipped
+        # default, and previews a refusal the real run would never print.
+        VNC_PASSWORD_SYNCED=true
+        return 0
+    fi
+
+    make_rw
+
+    if [ -f "$vncpass" ]; then
+        local backup_file="${vncpass}.bak.$(date +%Y%m%d-%H%M%S)"
+        if cp "$vncpass" "$backup_file"; then
+            ok "Backed up $vncpass to $backup_file"
+        else
+            warn "Could not back up $vncpass; overwriting it anyway."
+        fi
+    fi
+
+    # kvmd's VNCAuth file is one plaintext password per line. The password is
+    # NOT hashed, so ownership/permissions are the only thing protecting it.
+    if ! printf '%s\n' "$ADMIN_PASSWORD" > "$vncpass"; then
+        err "Could not write $vncpass; VNC password not synced."
+        return 1
+    fi
+
+    chown kvmd-vnc:kvmd-vnc "$vncpass" 2>/dev/null \
+        || warn "Could not chown $vncpass to kvmd-vnc; kvmd-vnc may not be able to read it."
+    chmod 600 "$vncpass" 2>/dev/null \
+        || warn "Could not chmod 600 $vncpass; it holds a cleartext password."
+
+    VNC_PASSWORD_SYNCED=true
+    ok "Admin password synced to VNC."
+}
+
+# Enable kvmd-vnc only once it has a password that isn't kvmd's shipped default.
+# Starting it otherwise exposes :5900 with the well-known password "admin".
+enable_vnc_service() {
+    # Only the modules that write VNC config bring the service up. --quality-cap
+    # patches an already-deployed server.py, so it restarts VNC but should not
+    # enable it on a box where the user deliberately keeps VNC off.
+    if [ "${RUN_CORE:-false}" != true ] && [ "${RUN_VNC_LEGACY:-false}" != true ]; then
+        return 0
+    fi
+
+    if [ "$VNC_PASSWORD_SYNCED" = true ] || ! vncpasswd_is_default; then
+        enable_service_if_exists kvmd-vnc.service
+        return 0
+    fi
+
+    warn "kvmd-vnc.service left stopped: /etc/kvmd/vncpasswd still holds the"
+    warn "default password. Starting VNC now would expose port 5900 with a"
+    warn "password that is public knowledge."
+    box_line "To enable VNC, set a password and start the service:"
+    box_line "  1) rerun this optimizer with --first-run (syncs the admin password), or"
+    box_line "     edit /etc/kvmd/vncpasswd by hand (one plaintext password per line)"
+    box_line "  2) systemctl enable --now kvmd-vnc.service"
+}
+
 apply_2fa() {
     info "Configuring PiKVM 2FA..."
     if ! command -v kvmd-totp >/dev/null 2>&1; then
@@ -4564,11 +4747,32 @@ apply_override_d() {
 
 uninstall_core_config() {
     info "Removing optimizer-managed core YAML keys..."
+    # vnc.auth.vencrypt.enabled is NOT listed here: since 1.4.4 it belongs to
+    # --vnc-legacy-client, and deleting it from under that module would silently
+    # re-enable vencrypt and break the legacy clients it was turned off for.
+    # uninstall_vnc_legacy_client owns it. vnc.vencrypt stays because core is
+    # what wrote that stray key in 1.4.3.
     delete_yaml_paths \
         kvmd.streamer.h264_gop \
         kvmd.streamer.quality \
         kvmd.streamer.h264_bitrate \
-        vnc.auth.vncauth.enabled
+        vnc.auth.vncauth.enabled \
+        vnc.vencrypt
+
+    if [ -f /etc/kvmd/vncpasswd ]; then
+        warn "/etc/kvmd/vncpasswd was not reverted; it may still hold the synced admin password."
+        box_line "Earlier copies are kept as /etc/kvmd/vncpasswd.bak.* if you need to restore one."
+    fi
+}
+
+# Reverts --vnc-legacy-client by dropping the override, which returns kvmd to
+# its own default (vencrypt enabled). Legacy clients that need it off will stop
+# connecting again — that is the point of the uninstall.
+uninstall_vnc_legacy_client() {
+    info "Restoring VNC vencrypt (kvmd default)..."
+    delete_yaml_paths vnc.auth.vencrypt.enabled
+    box_line "VNC TLS is enabled again. Clients that need vencrypt off (Screens,"
+    box_line "older viewers) will need --vnc-legacy-client to reconnect."
 }
 
 uninstall_mtu() {
@@ -4642,7 +4846,7 @@ uninstall_quality_cap() {
     make_rw
     cp "$latest_backup" "$server_py"
     ok "Restored $server_py from backup $latest_backup."
-    restart_service_if_exists kvmd-vnc.service
+    restart_service_if_active kvmd-vnc.service
 }
 
 uninstall_ssl() {
@@ -4844,6 +5048,56 @@ uninstall_override_d() {
     ok "Removed /etc/kvmd/override.d/ directory."
 }
 
+# Runs every selected UN_* operation and exits. Callers must re-check MODE after
+# interactive_uninstall_menu returns before calling this: "q" backs out of that
+# menu by setting MODE=optimize, and running the dispatch anyway would uninstall
+# things the user just declined to uninstall.
+run_uninstall_dispatch() {
+    draw "UNINSTALL / CLEANUP"
+
+    if [ "$YES" != true ]; then
+        box_prefix; printf "Apply selected uninstall/cleanup operations? [y/N]: "
+        read -r confirm
+        case "$confirm" in
+            y|Y) ;;
+            *) warn "Uninstall cancelled."; close_box; SUCCESS=true; make_ro; exit 0 ;;
+        esac
+    fi
+
+    if [ "$UN_CORE" = true ]; then uninstall_core_config; fi
+    if [ "$UN_VNC_LEGACY" = true ]; then uninstall_vnc_legacy_client; fi
+    if [ "$UN_QUALITY_CAP" = true ]; then uninstall_quality_cap; fi
+    if [ "$UN_MTU" = true ]; then uninstall_mtu; fi
+    if [ "$UN_KEEPALIVE" = true ]; then uninstall_tcp_keepalive; fi
+    if [ "$UN_EDID" = true ]; then uninstall_edid; fi
+    if [ "$UN_SSL" = true ]; then uninstall_ssl; fi
+    if [ "$UN_FAN" = true ]; then uninstall_fan; fi
+    if [ "$UN_WATCHDOG" = true ]; then uninstall_watchdog; fi
+    if [ "$UN_KEY" = true ]; then uninstall_ssh_key; fi
+    if [ "$UN_INSTALL" = true ]; then uninstall_on_device_optimizer; fi
+    if [ "$UN_SUDO" = true ]; then uninstall_sudoers; fi
+    if [ "$UN_MSD_BIOS_FIX" = true ]; then uninstall_msd_bios_fix; fi
+    if [ "$UN_TAILSCALE_CRASH_FIX" = true ]; then uninstall_tailscale_crash_fix; fi
+    if [ "$UN_WIFI" = true ]; then uninstall_wifi; fi
+    if [ "$UN_2FA" = true ]; then uninstall_2fa; fi
+    if [ "$UN_USB_PRESET" = true ]; then uninstall_usb_preset; fi
+    if [ "$UN_USB_EXTRA" = true ]; then uninstall_usb_extra; fi
+    if [ "$UN_MSD_STORAGE" = true ]; then uninstall_msd_storage; fi
+    if [ "$UN_MSD_DRIVES" = true ]; then uninstall_msd_drives; fi
+    if [ "$UN_OVERRIDE_D" = true ]; then uninstall_override_d; fi
+
+    final_restart || true
+
+    SUCCESS=true
+    make_ro
+
+    box_line ""
+    box_line "${G}[DONE]${RESET} Uninstall/cleanup finished."
+    rollback_hint
+    close_box
+    exit 0
+}
+
 restore_from_backup() {
     draw "RESTORE CONFIG BACKUP"
 
@@ -5033,6 +5287,10 @@ final_restart() {
         if [ "${RUN_SSL:-false}" = true ]; then
             ok "DRY RUN: would restart kvmd-nginx.service if present."
         fi
+        if [ "${RUN_CORE:-false}" = true ] || [ "${RUN_VNC_LEGACY:-false}" = true ] \
+            || [ "${RUN_QUALITY_CAP:-false}" = true ]; then
+            ok "DRY RUN: would restart kvmd-vnc.service if it is running."
+        fi
         return 0
     fi
 
@@ -5043,7 +5301,18 @@ final_restart() {
         restart_service_if_exists kvmd-nginx.service false
     fi
 
-    restart_service_if_exists kvmd-vnc.service false
+    # Restart-if-active, never restart-to-start. enable_vnc_service already ran
+    # by this point and is the only thing allowed to bring kvmd-vnc up, and it
+    # refuses while /etc/kvmd/vncpasswd still holds kvmd's shipped password. A
+    # plain `systemctl restart` here would start the unit anyway and put a VNC
+    # listener on :5900 with the public password "admin" — the exact hole
+    # enable_vnc_service exists to close. An inactive unit at this point means
+    # either that gate refused or the user keeps VNC off deliberately; both are
+    # reasons to leave it alone.
+    if [ "${RUN_CORE:-false}" = true ] || [ "${RUN_VNC_LEGACY:-false}" = true ] \
+        || [ "${RUN_QUALITY_CAP:-false}" = true ]; then
+        restart_service_if_active kvmd-vnc.service false
+    fi
 
     # Post-run reboot warning for modules that benefit from reboot
     if [ "${RUN_MTU:-false}" = true ] || [ "${RUN_EDID:-false}" = true ]; then
@@ -5139,96 +5408,36 @@ backup_config
 close_box
 sleep 0.5
 
+# BEGIN uninstall-dispatch-flow
+# tests/validate_logic.sh extracts everything between these two markers and runs
+# it with the menus stubbed. Keep them in place; the tests fail loudly if either
+# marker goes missing, but they cannot detect edits made outside the markers.
+#
+# --uninstall on the command line. The menu may hand control back with
+# MODE=optimize ("q" = back out), which drops through to the module menu below.
+if [ "$MODE" = "uninstall" ] && [ "$YES" != true ]; then
+    interactive_uninstall_menu
+fi
+
 if [ "$MODE" = "uninstall" ]; then
-    if [ "$YES" != true ]; then
-        interactive_uninstall_menu
-    fi
-
-    draw "UNINSTALL / CLEANUP"
-
-    if [ "$UN_CORE" = true ]; then uninstall_core_config; fi
-    if [ "$UN_QUALITY_CAP" = true ]; then uninstall_quality_cap; fi
-    if [ "$UN_MTU" = true ]; then uninstall_mtu; fi
-    if [ "$UN_KEEPALIVE" = true ]; then uninstall_tcp_keepalive; fi
-    if [ "$UN_EDID" = true ]; then uninstall_edid; fi
-    if [ "$UN_SSL" = true ]; then uninstall_ssl; fi
-    if [ "$UN_FAN" = true ]; then uninstall_fan; fi
-    if [ "$UN_WATCHDOG" = true ]; then uninstall_watchdog; fi
-    if [ "$UN_KEY" = true ]; then uninstall_ssh_key; fi
-    if [ "$UN_INSTALL" = true ]; then uninstall_on_device_optimizer; fi
-    if [ "$UN_SUDO" = true ]; then uninstall_sudoers; fi
-    if [ "$UN_MSD_BIOS_FIX" = true ]; then uninstall_msd_bios_fix; fi
-    if [ "$UN_TAILSCALE_CRASH_FIX" = true ]; then uninstall_tailscale_crash_fix; fi
-    if [ "$UN_WIFI" = true ]; then uninstall_wifi; fi
-    if [ "$UN_2FA" = true ]; then uninstall_2fa; fi
-    if [ "$UN_USB_PRESET" = true ]; then uninstall_usb_preset; fi
-    if [ "$UN_USB_EXTRA" = true ]; then uninstall_usb_extra; fi
-    if [ "$UN_MSD_STORAGE" = true ]; then uninstall_msd_storage; fi
-    if [ "$UN_MSD_DRIVES" = true ]; then uninstall_msd_drives; fi
-    if [ "$UN_OVERRIDE_D" = true ]; then uninstall_override_d; fi
-
-    final_restart
-
-    SUCCESS=true
-    make_ro
-
-    box_line ""
-    box_line "${G}[DONE]${RESET} Uninstall/cleanup finished."
-    rollback_hint
-    close_box
-    exit 0
+    run_uninstall_dispatch
 fi
 
 if [ "$YES" != true ] && [ "$FLAGS_PROVIDED" != true ]; then
     interactive_module_menu
 fi
 
-if [ "$MODE" = "uninstall" ]; then
+# "u" in the module menu. Same contract: re-check MODE after the menu returns.
+while [ "$MODE" = "uninstall" ]; do
     interactive_uninstall_menu
-    draw "UNINSTALL / CLEANUP"
 
-    # Confirm before executing destructive changes
-    if [ "$YES" != true ]; then
-        box_prefix; printf "Apply selected uninstall/cleanup operations? [y/N]: "
-        read -r confirm
-        case "$confirm" in
-            y|Y) ;;
-            *) warn "Uninstall cancelled."; close_box; SUCCESS=true; make_ro; exit 0 ;;
-        esac
+    if [ "$MODE" = "uninstall" ]; then
+        run_uninstall_dispatch
     fi
 
-    if [ "$UN_CORE" = true ]; then uninstall_core_config; fi
-    if [ "$UN_QUALITY_CAP" = true ]; then uninstall_quality_cap; fi
-    if [ "$UN_MTU" = true ]; then uninstall_mtu; fi
-    if [ "$UN_KEEPALIVE" = true ]; then uninstall_tcp_keepalive; fi
-    if [ "$UN_EDID" = true ]; then uninstall_edid; fi
-    if [ "$UN_SSL" = true ]; then uninstall_ssl; fi
-    if [ "$UN_FAN" = true ]; then uninstall_fan; fi
-    if [ "$UN_WATCHDOG" = true ]; then uninstall_watchdog; fi
-    if [ "$UN_KEY" = true ]; then uninstall_ssh_key; fi
-    if [ "$UN_INSTALL" = true ]; then uninstall_on_device_optimizer; fi
-    if [ "$UN_SUDO" = true ]; then uninstall_sudoers; fi
-    if [ "$UN_MSD_BIOS_FIX" = true ]; then uninstall_msd_bios_fix; fi
-    if [ "$UN_TAILSCALE_CRASH_FIX" = true ]; then uninstall_tailscale_crash_fix; fi
-    if [ "$UN_WIFI" = true ]; then uninstall_wifi; fi
-    if [ "$UN_2FA" = true ]; then uninstall_2fa; fi
-    if [ "$UN_USB_PRESET" = true ]; then uninstall_usb_preset; fi
-    if [ "$UN_USB_EXTRA" = true ]; then uninstall_usb_extra; fi
-    if [ "$UN_MSD_STORAGE" = true ]; then uninstall_msd_storage; fi
-    if [ "$UN_MSD_DRIVES" = true ]; then uninstall_msd_drives; fi
-    if [ "$UN_OVERRIDE_D" = true ]; then uninstall_override_d; fi
-
-    final_restart || true
-
-    SUCCESS=true
-    make_ro
-
-    box_line ""
-    box_line "${G}[DONE]${RESET} Uninstall/cleanup finished."
-    rollback_hint
-    close_box
-    exit 0
-fi
+    interactive_module_menu
+done
+# END uninstall-dispatch-flow
 
 if [ "$MODE" = "health" ]; then
     health_check
@@ -5259,6 +5468,7 @@ box_line ""; if [ "$RUN_PIKVM_UPDATE" = true ]; then apply_pikvm_update; fi
 # --- Group 1: Foundation (base config, independent patches) ---
 if [ "$RUN_CORE" = true ]; then apply_core_config; fi
 if [ "$RUN_QUALITY_CAP" = true ]; then apply_vnc_quality_cap; fi
+if [ "$RUN_VNC_LEGACY" = true ]; then apply_vnc_legacy_client; fi
 
 # --- Group 2: Dependency installations (must run before their dependents) ---
 box_line ""; if [ "$RUN_TAILSCALE_SETUP" = true ]; then apply_tailscale_setup; fi
@@ -5290,7 +5500,10 @@ if [ "$RUN_FIRST_RUN" = true ]; then apply_first_run; fi       # admin password 
 if [ "$RUN_2FA" = true ]; then apply_2fa; fi
 
 # --- Group 7: Post-setup (no dependencies, run after config is settled) ---
-box_line ""; enable_oled_if_present
+# VNC password sync must follow Group 6: apply_first_run is what sets ADMIN_PASSWORD.
+box_line ""; sync_vnc_password
+enable_vnc_service
+enable_oled_if_present
 if [ "$RUN_KEY" = true ]; then apply_ssh_key; fi
 if [ "$RUN_INSTALL" = true ]; then install_on_device_optimizer; fi
 # if [ "$RUN_SUDO" = true ]; then apply_restricted_sudo; fi (DISABLED — security risk)

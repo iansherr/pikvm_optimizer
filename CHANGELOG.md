@@ -5,6 +5,133 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.5] - 2026-08-16
+
+### Security
+
+- `final_restart` no longer starts `kvmd-vnc.service`. `enable_vnc_service` refuses to bring the
+  service up while `/etc/kvmd/vncpasswd` still holds kvmd's shipped password, but `final_restart`
+  then ran `systemctl restart kvmd-vnc.service` whenever `RUN_CORE` was true — and `RUN_CORE`
+  defaults to true. `systemctl restart` starts an inactive unit, so a default run on a fresh
+  PiKVM printed the "would expose port 5900" refusal and started VNC with the public password
+  `admin` anyway, defeating the 1.4.4 gate entirely. The restart is now restart-if-active: it
+  picks up config changes on a running service and never starts a stopped one. `--quality-cap`
+  and `uninstall_quality_cap` get the same treatment, so neither can start VNC on a box where
+  the user keeps it off.
+
+### Fixed
+
+- Pressing `q` ("back") in the uninstall menu ran the uninstall anyway. The handler set
+  `MODE=optimize`, but both call sites ignored the change and fell straight through to the
+  `UN_*` dispatch — so backing out, selecting modules, and pressing Enter uninstalled the
+  selected cleanup items and exited without ever applying the chosen modules. The two duplicated
+  dispatch blocks are now one `run_uninstall_dispatch` function that callers reach only while
+  `MODE` is still `uninstall`. This path became reachable in 1.4.4 when the `u`/`i` key swap
+  unshadowed `u` in the module menu.
+- The `--uninstall` command-line path now asks for confirmation before executing, matching the
+  path reached through the module menu. Previously only the latter prompted.
+- `uninstall_core_config` no longer deletes `vnc.auth.vencrypt.enabled`. Since 1.4.4 that key is
+  written exclusively by `--vnc-legacy-client`, so removing "core config keys" silently reverted
+  vencrypt to kvmd's default and broke legacy VNC clients again. The stray 1.4.3 `vnc.vencrypt`
+  key stays with core, which is what wrote it.
+- Added an uninstall entry for `--vnc-legacy-client` (`[v]`, `UN_VNC_LEGACY`). Removing that
+  module previously required uninstalling core config as a side effect.
+- `--dry-run --first-run` previewed the VNC refusal instead of the sync. `sync_vnc_password`
+  returned before setting `VNC_PASSWORD_SYNCED`, so `enable_vnc_service` read the untouched file,
+  found the shipped default, and predicted an outcome the real run would never produce.
+- `rollback_remote` now lists the `/etc/kvmd/vncpasswd` overwrite under "Left in place (cannot be
+  undone)". Interrupting after group 7 left the cleartext admin password on disk unmentioned,
+  even though the uninstall path warns about the same file.
+- Corrected the `apply_quality_cap` comment claiming the uninstall dispatch exits before
+  `final_restart` — both dispatches call it.
+
+### Added
+
+- `tests/validate_logic.sh`: 20 control-flow regression tests covering the VNC service gate and
+  the uninstall-menu branches. `validate_patches.py` only checks the YAML the modules write, so
+  none of the bugs above were reachable by the existing suite. Needs neither Docker nor a PiKVM.
+  Both the function bodies and the top-level uninstall dispatch block are extracted from the
+  embedded remote script rather than reimplemented, so editing the real flow fails the tests
+  instead of leaving a stale copy passing; the block is delimited by
+  `# BEGIN/END uninstall-dispatch-flow` markers and the suite aborts if they go missing. Every
+  fix above is mutation-checked: reverting any one of them fails the suite.
+
+### Documentation
+
+- README flag table gained the missing `--vnc-legacy-client` row, including its TLS warning, and
+  a Tests section covering both suites.
+
+## [1.4.4] - 2026-07-26
+
+### Security
+
+- `--core` no longer starts `kvmd-vnc.service` while `/etc/kvmd/vncpasswd` still holds kvmd's
+  shipped default password. In 1.4.3 the password sync never ran (see below), so enabling the
+  service put a VNC listener on port 5900 authenticating against the stock password `admin`.
+  The service is now enabled only once a non-default password is in place; otherwise the config
+  is written, the service is left stopped, and the run explains how to finish setup.
+- `vencrypt` is no longer disabled for everyone. Turning it off disables TLS for VNC, so
+  passwords and screen contents cross the network in cleartext. It now lives behind the opt-in
+  `--vnc-legacy-client` flag and kvmd's secure default is preserved unless you ask otherwise.
+
+### Fixed
+
+- VNC password sync never ran: `apply_core_config` (module group 1) read `$ADMIN_PASSWORD`, but
+  only `apply_first_run` (group 6) sets it, so the value was always empty and
+  `/etc/kvmd/vncpasswd` was never written. The sync moved to group 7, after first-run setup.
+- `vencrypt` was written to `vnc.vencrypt.enabled`, which is not a kvmd config path — the real
+  one is `vnc.auth.vencrypt.enabled`. kvmd ignores unknown override keys without erroring, so
+  the 1.4.3 setting silently did nothing and validation still passed. `--core` now removes the
+  stray key from existing `override.yaml` files.
+- `/etc/kvmd/vncpasswd` is backed up to `.bak.<timestamp>` before being overwritten, matching how
+  the SSL and watchdog modules treat files they replace.
+- `chown`/`chmod` on `/etc/kvmd/vncpasswd` now warn on failure instead of failing silently. A
+  failed `chown` leaves the file `root:root` mode 600, unreadable by the `kvmd-vnc` service user,
+  which breaks VNC auth with no visible cause.
+- `kvmd-vnc.service` is no longer restarted on every run. It is restarted only when a
+  VNC-affecting module ran, matching how the `kvmd-nginx` restart is gated on `--ssl`. Previously
+  every run emitted a spurious "service not found" warning on boxes without the VNC extra, and
+  dropped live VNC sessions during unrelated runs.
+- `uninstall_core_config` now removes `vnc.auth.vencrypt.enabled` and the stray `vnc.vencrypt`
+  key, and points at the `vncpasswd` backups.
+- `REMOTE_VERSION` was stale at `1.4.2`; 1.4.3 bumped only `VERSION`, so `--version` and the
+  installed on-device command both misreported.
+- The uninstall menu was unreachable from the module menu. `u|U` appeared twice in the same
+  `case`, and the PiKVM OS update toggle shadowed `MODE="uninstall"`, so the `u = uninstall menu`
+  the menu header advertised never fired. The OS update module moved to `i`; `u` now opens the
+  uninstall menu as documented.
+- Presets did not reset `RUN_PIKVM_UPDATE`. Selecting "none" reported "Cleared all module
+  selections" while leaving a full `pacman` upgrade armed, and `--pikvm-update --all` silently
+  kept it enabled. All three presets now set it explicitly; it stays opt-in via `--pikvm-update`
+  or menu key `i`.
+- `kvmd-vnc.service` was restarted twice per run when `--quality-cap` was used, once by the
+  module and again by `final_restart`. The module no longer restarts it directly.
+
+### Changed
+
+- **The config validation suite now actually runs.** It had never passed: `pip install kvmd`
+  does not install PiKVM's kvmd — the PyPI name is an abandoned 2018 daemon (v0.10) that raises
+  "This module can only be run on a Raspberry Pi!" on import, so the Config Validation CI job
+  failed on every run since it was added and no patch was ever really checked. This is why the
+  1.4.3 `vencrypt` path bug shipped unnoticed.
+  - `tests/validate_patches.sh` is replaced by `tests/validate_patches.py`, which drives kvmd's
+    real config engine directly instead of shelling out to the `kvmd` CLI (which cannot run off
+    a PiKVM — it imports the whole daemon and needs `ustreamer`, not published on PyPI).
+  - Patches are now checked for **effect**, not just validity: the suite asserts keys reach the
+    resolved config, which is what catches silently-ignored wrong paths.
+  - A regression case pins the 1.4.3 bug, asserting `vnc.vencrypt.enabled` stays inert.
+  - `tests/Dockerfile` and the CI workflow install kvmd from GitHub with the runtime imports its
+    `setup.py` omits, and run on Python 3.13. Only the six modules the config scheme actually
+    needs are installed (`pyyaml ruamel.yaml pygments evdev aiofiles aiohttp`); pulling in the
+    rest of kvmd's runtime deps drags in packages with no arm64 wheels that build from source.
+  - `tests/docker-test.sh` prefers BuildKit (`docker buildx build`); the deprecated legacy
+    builder fails silently on some daemons, producing no output and no image.
+
+### Added
+
+- `--vnc-legacy-client` module (menu key `v`, config key `vnc_legacy_client`) — disables VNC
+  vencrypt for clients such as Screens that implement it incorrectly. Off in all presets.
+
 ## [1.4.3] - 2026-06-21
 
 ### Added
