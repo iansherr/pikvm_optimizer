@@ -28,10 +28,16 @@ jobs:
       # an abandoned 2018 daemon that refuses to import off a Raspberry Pi. That
       # is why this job failed on every run before 1.4.4. Install from GitHub,
       # plus the runtime imports kvmd's setup.py does not declare.
+      #
+      # The ref is pinned on purpose: a bare `git+https://github.com/pikvm/kvmd`
+      # floats with upstream `master`, which moved on after v4.206 and broke the
+      # import (`NbdClient` became TYPE_CHECKING-guarded with no postponed
+      # evaluation, so `import kvmd.apps` dies with NameError). The suite was
+      # validated against v4.206; keep it pinned until upstream fixes the import.
       - name: Install kvmd
         run: |
           pip install \
-            git+https://github.com/pikvm/kvmd \
+            git+https://github.com/pikvm/kvmd@v4.206 \
             pyyaml ruamel.yaml pygments evdev aiofiles aiohttp
 
       - name: Download platform-specific main.yaml

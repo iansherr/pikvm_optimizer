@@ -38,6 +38,10 @@ entrypoint that performs the real override merge *and* the dynamic plugin
 schema patching (which is what makes keys like kvmd.msd.type resolve) without
 pulling in the daemon itself. The public `kvmd` CLI cannot be used off-device:
 it imports the whole daemon stack and needs ustreamer, which is not on PyPI.
+
+Validated against kvmd v4.206 (commit 0e08d5de53f89b36da627a81febfa4204f27cb65).
+CI pins the install to that ref; upstream `master` moved past v4.206 and the
+v4.227 refactor broke the NbdClient import, failing `import kvmd.apps`.
 """
 
 import os
